@@ -12,6 +12,7 @@ import logging
 from typing import Tuple, Any
 from datetime import datetime
 import pickle
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -45,7 +46,9 @@ def train_and_log_model_colab(
     split_date: str = '2022-01-01'
 ) -> Tuple[str, Any]:
     with mlflow.start_run() as run:
+        logger.info(f"Run ID: {run.info.run_id}")
         logger.info("Fetching data from GCS...")
+        
         client = storage.Client(project=project_id)
         bucket = client.get_bucket(bucket_name)
         blob = bucket.blob('stock_data/MASB.csv')
@@ -117,6 +120,7 @@ def train_and_log_model_colab(
         results = {
             'run_id': run.info.run_id,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'model_type': 'lightgbm',  # Add model type
             'metrics': {
                 'mse': float(mse),
                 'rmse': float(rmse),
@@ -142,7 +146,6 @@ def train_and_log_model_colab(
         model_blob = bucket.blob(f'models/lightgbm/{run.info.run_id}/lightgbm_model.pkl')
         model_blob.upload_from_filename(model_save_path)
 
-        logger.info(f"Run ID: {run.info.run_id}")
         logger.info(f"Metrics - MSE: {mse:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}, MAE: {mae:.4f}")
         print(f"Run ID to use in dashboard: {run.info.run_id}")
 
