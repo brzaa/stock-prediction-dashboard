@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 def save_model_results(run_id: str, results: dict, bucket_name: str = "mlops-brza"):
     """Save model results organized by run ID"""
     try:
+        logger.info(f"Saving results for run ID: {run_id}")
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         
@@ -33,16 +34,6 @@ def save_model_results(run_id: str, results: dict, bucket_name: str = "mlops-brz
             json.dumps(results, indent=2),
             content_type='application/json'
         )
-        
-        # Save a summary for easy lookup in model_outputs/summary/
-        summary = {
-            'run_id': run_id,
-            'timestamp': results['timestamp'],
-            'metrics': results['metrics']
-        }
-        summary_blob = bucket.blob(f'model_outputs/summary/{run_id}.json')
-        summary_blob.upload_from_string(json.dumps(summary, indent=2))
-        
         logger.info(f"Results saved to: gs://{bucket_name}/{output_path}")
         return True
     except Exception as e:
