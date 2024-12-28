@@ -89,17 +89,10 @@ def train_and_log_model_colab(
 
         best_params = {
             'num_leaves': 31,
-<<<<<<< HEAD
-            'max_depth': 5,
-            'learning_rate': 0.1,
-            'n_estimators': 100,
-            'min_child_samples': 5,
-=======
-            'max_depth': 10,
-            'learning_rate': 0.05,
-            'n_estimators': 200,
-            'min_child_samples': 20,
->>>>>>> 63bba2408c5524e16776d20ba93512706bf4185a
+            'max_depth': 7,  # Compromise between 5 and 10
+            'learning_rate': 0.07,  # Compromise between 0.1 and 0.05
+            'n_estimators': 150,  # Compromise between 100 and 200
+            'min_child_samples': 10,  # Compromise between 5 and 20
             'subsample': 0.8,
             'colsample_bytree': 0.8,
             'reg_alpha': 0.1,
@@ -131,7 +124,6 @@ def train_and_log_model_colab(
             'run_id': run.info.run_id,
             'model_type': 'lightgbm',
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'model_type': 'lightgbm',  # Add model type
             'metrics': {
                 'mse': float(mse),
                 'rmse': float(rmse),
@@ -141,13 +133,9 @@ def train_and_log_model_colab(
             'parameters': best_params,
             'predictions': y_pred.tolist(),
             'actual_values': y_test.tolist(),
-<<<<<<< HEAD
             'feature_names': list(X_test.columns),
             'feature_importance': model.feature_importances_.tolist(),
             'dates': test_data.index.strftime('%Y-%m-%d').tolist()
-=======
-            'feature_names': list(X_test.columns)
->>>>>>> 63bba2408c5524e16776d20ba93512706bf4185a
         }
         
         save_model_results(run.info.run_id, results, bucket_name)
@@ -155,14 +143,14 @@ def train_and_log_model_colab(
         # Save model locally first
         model_path = "/content/models"
         os.makedirs(model_path, exist_ok=True)
-<<<<<<< HEAD
 
         # Save the LightGBM model
-        model_save_path = f"{model_path}/lightgbm_model.txt"
-        model.booster_.save_model(model_save_path)
-        
+        model_save_path = f"{model_path}/lightgbm_model.pkl"
+        with open(model_save_path, 'wb') as f:
+            pickle.dump(model, f)
+
         # Upload to GCS
-        model_blob = bucket.blob(f'models/lightgbm/{run.info.run_id}/model.txt')
+        model_blob = bucket.blob(f'models/lightgbm/{run.info.run_id}/lightgbm_model.pkl')
         model_blob.upload_from_filename(model_save_path)
 
         # Log model with MLflow
@@ -179,25 +167,4 @@ def train_and_log_model_colab(
         print("="*50 + "\n")
         
         logger.info(f"Run ID: {run.info.run_id}")
-=======
-
-        # Save the model using pickle
-        model_save_path = f"{model_path}/lightgbm_model.pkl"
-        with open(model_save_path, 'wb') as f:
-            pickle.dump(model, f)
-
-        model_blob = bucket.blob(f'models/lightgbm/{run.info.run_id}/lightgbm_model.pkl')
-        model_blob.upload_from_filename(model_save_path)
-
->>>>>>> 63bba2408c5524e16776d20ba93512706bf4185a
-        logger.info(f"Metrics - MSE: {mse:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}, MAE: {mae:.4f}")
-
-        return run.info.run_id, scaler, model, X_test_scaled, y_test
-
-if __name__ == "__main__":
-    project_id = "mlops-thesis"
-    try:
-        run_id, _, _, _, _ = train_and_log_model_colab(project_id)
-        print(f"\nUse this Run ID in the dashboard: {run_id}\n")
-    except Exception as e:
-        logger.error(f"Error during training: {str(e)}")
+        logger.info(f"Metrics - MSE: {mse:.4
