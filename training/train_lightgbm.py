@@ -11,7 +11,6 @@ from google.cloud import storage
 import logging
 from typing import Tuple, Any
 from datetime import datetime
-import pickle
 import json
 
 # Configure logging
@@ -47,9 +46,7 @@ def train_and_log_model_colab(
     split_date: str = '2022-01-01'
 ) -> Tuple[str, Any]:
     with mlflow.start_run() as run:
-        logger.info(f"Run ID: {run.info.run_id}")
         logger.info("Fetching data from GCS...")
-        
         client = storage.Client(project=project_id)
         bucket = client.get_bucket(bucket_name)
         blob = bucket.blob('stock_data/MASB.csv')
@@ -87,12 +84,16 @@ def train_and_log_model_colab(
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
 
+        mlflow.log_param("train_size", len(X_train))
+        mlflow.log_param("test_size", len(X_test))
+        mlflow.log_param("split_date", split_date)
+
         best_params = {
             'num_leaves': 31,
-            'max_depth': 7,  # Compromise between 5 and 10
-            'learning_rate': 0.07,  # Compromise between 0.1 and 0.05
-            'n_estimators': 150,  # Compromise between 100 and 200
-            'min_child_samples': 10,  # Compromise between 5 and 20
+            'max_depth': 5,
+            'learning_rate': 0.1,
+            'n_estimators': 100,
+            'min_child_samples': 5,
             'subsample': 0.8,
             'colsample_bytree': 0.8,
             'reg_alpha': 0.1,
@@ -145,12 +146,11 @@ def train_and_log_model_colab(
         os.makedirs(model_path, exist_ok=True)
 
         # Save the LightGBM model
-        model_save_path = f"{model_path}/lightgbm_model.pkl"
-        with open(model_save_path, 'wb') as f:
-            pickle.dump(model, f)
-
+        model_save_path = f"{model_path}/lightgbm_model.txt"
+        model.booster_.save_model(model_save_path)
+        
         # Upload to GCS
-        model_blob = bucket.blob(f'models/lightgbm/{run.info.run_id}/lightgbm_model.pkl')
+        model_blob = bucket.blob(f'models/lightgbm/{run.info.run_id}/model.txt')
         model_blob.upload_from_filename(model_save_path)
 
         # Log model with MLflow
@@ -167,4 +167,14 @@ def train_and_log_model_colab(
         print("="*50 + "\n")
         
         logger.info(f"Run ID: {run.info.run_id}")
-        logger.info(f"Metrics - MSE: {mse:.4
+        logger.info(f"Metrics - MSE: {mse:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}, MAE: {mae:.4f}")
+
+        return run.info.run_id, scaler, model, X_test_scaled, y_test
+
+if __name__ == "__main__":
+    project_id = "mlops-thesis"
+    try:
+        run_id, _, _, _, _ = train_and_log_model_colab(project_id)
+        print(f"\nUse this Run ID in the dashboard: {run_id}\n")
+    except Exception as e:
+        logger.error(f"Error during training: {str(e)}")
