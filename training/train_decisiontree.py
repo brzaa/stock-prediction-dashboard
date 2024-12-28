@@ -54,7 +54,7 @@ def train_and_log_model_colab(
     project_id: str,
     bucket_name: str = "mlops-brza",
     split_date: str = '2022-01-01',
-    model_type: str = "decision_tree"
+    model_type: str = "decision_tree"  # Simplified to just "decision_tree"
 ) -> Tuple[str, Any]:
     with mlflow.start_run() as run:
         logger.info(f"Starting training for model type: {model_type}")
@@ -169,17 +169,10 @@ def train_and_log_model_colab(
 if __name__ == "__main__":
     project_id = "mlops-thesis"
     
-    # Train multiple model types or variations
-    model_types = [
-        "decision_tree_default",
-        "decision_tree_optimized",
-        "decision_tree_pruned"  # Add more model types as needed
-    ]
-    
-    for model_type in model_types:
-        print(f"\nTraining {model_type}...")
-        run_id, _, _, _, _ = train_and_log_model_colab(
-            project_id=project_id,
-            model_type=model_type
-        )
-        print(f"Completed {model_type} training. Run ID: {run_id}\n")
+    # Train single model
+    print("\nTraining decision tree model...")
+    run_id, _, _, _, _ = train_and_log_model_colab(
+        project_id=project_id,
+        model_type="decision_tree"  # Simplified model type
+    )
+    print(f"Completed decision tree training. Run ID: {run_id}\n")
