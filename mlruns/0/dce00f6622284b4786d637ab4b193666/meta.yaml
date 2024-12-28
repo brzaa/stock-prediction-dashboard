@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/dce00f6622284b4786d637ab4b193666/artifacts
+end_time: 1735385172842
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: dce00f6622284b4786d637ab4b193666
+run_name: able-hen-291
+run_uuid: dce00f6622284b4786d637ab4b193666
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735385167203
+status: 3
+tags: []
+user_id: root

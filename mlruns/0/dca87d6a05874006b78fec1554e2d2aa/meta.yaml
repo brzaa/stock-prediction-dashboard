@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/dca87d6a05874006b78fec1554e2d2aa/artifacts
+end_time: 1735386714728
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: dca87d6a05874006b78fec1554e2d2aa
+run_name: delicate-gull-766
+run_uuid: dca87d6a05874006b78fec1554e2d2aa
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735386707095
+status: 3
+tags: []
+user_id: root

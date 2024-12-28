@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/9675257b9e03493299187e9a0b22ec34/artifacts
+end_time: 1735386707091
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 9675257b9e03493299187e9a0b22ec34
+run_name: nosy-snake-739
+run_uuid: 9675257b9e03493299187e9a0b22ec34
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735386699211
+status: 3
+tags: []
+user_id: root

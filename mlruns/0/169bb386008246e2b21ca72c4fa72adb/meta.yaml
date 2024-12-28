@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/169bb386008246e2b21ca72c4fa72adb/artifacts
+end_time: 1735386699207
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 169bb386008246e2b21ca72c4fa72adb
+run_name: puzzled-rat-786
+run_uuid: 169bb386008246e2b21ca72c4fa72adb
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735386691483
+status: 3
+tags: []
+user_id: root

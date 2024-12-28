@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/0243e33772c542ab838c4d3b1d2d373e/artifacts
+end_time: 1735379350370
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 0243e33772c542ab838c4d3b1d2d373e
+run_name: capricious-lark-170
+run_uuid: 0243e33772c542ab838c4d3b1d2d373e
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735379334091
+status: 3
+tags: []
+user_id: root

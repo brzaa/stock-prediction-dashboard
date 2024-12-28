@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/940d604cfc5c48a8b7b7ee49a88ec370/artifacts
+end_time: 1735379334087
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 940d604cfc5c48a8b7b7ee49a88ec370
+run_name: wistful-wren-564
+run_uuid: 940d604cfc5c48a8b7b7ee49a88ec370
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735379313908
+status: 3
+tags: []
+user_id: root
