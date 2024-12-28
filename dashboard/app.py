@@ -27,27 +27,19 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
         client = get_gcs_client()
         bucket = client.bucket(bucket_name)
         
-        # Define model-specific paths
+        # List of possible paths to check
         paths = [
-            f'model_outputs/lightgbm/{run_id}/results.json',  # LightGBM specific path
-            f'model_outputs/xgboost/{run_id}/results.json',   # XGBoost path
-            f'model_outputs/lstm/{run_id}/results.json',      # LSTM path
-            f'model_outputs/decision_tree/{run_id}/results.json',  # Decision Tree path
             f'model_outputs/{run_id}/results.json',  # Default path
+            f'model_outputs/lstm/{run_id}/results.json',  # LSTM specific path
+            f'model_outputs/decision_tree/{run_id}/results.json',  # Decision Tree path
+            f'model_outputs/xgboost/{run_id}/results.json'  # XGBoost path
         ]
         
         for path in paths:
             blob = bucket.blob(path)
             if blob.exists():
-                results = json.loads(blob.download_as_string())
-                # Determine model type from path if not in results
-                if 'model_type' not in results:
-                    for model_type in ['lightgbm', 'xgboost', 'lstm', 'decision_tree']:
-                        if model_type in path:
-                            results['model_type'] = model_type
-                            break
                 st.success(f"Found results at: {path}")
-                return results
+                return json.loads(blob.download_as_string())
         
         st.error(f"No results found for Run ID: {run_id}")
         return None
@@ -64,43 +56,21 @@ def load_all_models_results(bucket_name: str) -> list:
         
         # List all results files
         all_results = []
-        model_paths = {
-            'lightgbm': 'model_outputs/lightgbm/',
-            'xgboost': 'model_outputs/xgboost/',
-            'lstm': 'model_outputs/lstm/',
-            'decision_tree': 'model_outputs/decision_tree/'
-        }
+        model_types = ['xgboost', 'lstm', 'decision_tree']
         
-        # Check each model type directory
-        for model_type, base_path in model_paths.items():
-            for blob in bucket.list_blobs(prefix=base_path):
-                if blob.name.endswith('results.json'):
-                    try:
-                        results = json.loads(blob.download_as_string())
-                        # Set model type if not present
-                        if 'model_type' not in results:
-                            results['model_type'] = model_type
-                        all_results.append(results)
-                    except Exception as e:
-                        st.warning(f"Error reading results from {blob.name}: {e}")
-                        continue
-        
-        # Also check default path for any results
+        # Search in all possible paths
         for blob in bucket.list_blobs(prefix='model_outputs/'):
-            if blob.name.endswith('results.json') and '/' not in blob.name[len('model_outputs/'):]:
+            if blob.name.endswith('results.json'):
                 try:
                     results = json.loads(blob.download_as_string())
-                    # Try to determine model type from the results
+                    # Add model type if not present
                     if 'model_type' not in results:
-                        for model_type in model_paths.keys():
-                            if model_type in blob.name.lower():
+                        for model_type in model_types:
+                            if model_type in blob.name:
                                 results['model_type'] = model_type
                                 break
-                            else:
-                                results['model_type'] = 'Unknown'
                     all_results.append(results)
-                except Exception as e:
-                    st.warning(f"Error reading results from {blob.name}: {e}")
+                except:
                     continue
                     
         return all_results
@@ -163,12 +133,10 @@ def plot_feature_importance(results):
 
 def plot_model_comparison(all_results):
     """Create comparison plots for model metrics"""
-    # Prepare data for comparison
     comparison_data = []
-    
     for result in all_results:
         comparison_data.append({
-            'Model Type': result.get('model_type', 'Unknown').upper(),  # Convert to uppercase
+            'Model Type': result.get('model_type', 'Unknown'),
             'Run ID': result['run_id'],
             'Timestamp': result['timestamp'],
             'MSE': result['metrics']['mse'],
@@ -240,8 +208,7 @@ def main():
     else:
         model_type = st.sidebar.selectbox(
             "Select Model Type",
-            ["LightGBM", "XGBoost", "Decision Tree", "LSTM"],
-            index=0  # Set LightGBM as default
+            ["XGBoost", "Decision Tree", "LSTM"]
         )
         
         run_id = st.sidebar.text_input("Enter Run ID")
@@ -250,9 +217,11 @@ def main():
             results = load_model_results("mlops-brza", run_id)
             
             if results:
-                st.subheader(f"Model Type: {results.get('model_type', model_type).upper()}")
+                # Display model type and timestamp
+                st.subheader(f"Model Type: {results.get('model_type', model_type)}")
                 st.text(f"Training Time: {results['timestamp']}")
                 
+                # Display metrics
                 st.header("Model Performance Metrics")
                 metrics = results['metrics']
                 
@@ -266,24 +235,26 @@ def main():
                 with col4:
                     st.metric("MAE", f"{metrics['mae']:.2f}")
                 
+                # Predictions plot
                 st.header("Model Predictions")
                 plot_predictions(results)
                 
-                if model_type in ["LightGBM", "XGBoost", "Decision Tree"]:
-                    if results.get('feature_importance') and results.get('feature_names'):
-                        st.header("Feature Importance")
-                        plot_feature_importance(results)
-                    else:
-                        st.info("Feature importance not available for this model run")
+                # Feature importance (only for tree-based models)
+                if model_type in ["XGBoost", "Decision Tree"]:
+                    st.header("Feature Importance")
+                    plot_feature_importance(results)
                 
+                # Model parameters
                 with st.expander("Model Parameters"):
                     st.json(results['parameters'])
                 
+                # Training details
                 with st.expander("Training Details"):
                     st.text(f"Run ID: {results['run_id']}")
-                    st.text(f"Model Type: {results.get('model_type', model_type).upper()}")
+                    st.text(f"Model Type: {results.get('model_type', model_type)}")
                     st.text(f"Training Time: {results['timestamp']}")
                 
+                # Download results
                 st.sidebar.download_button(
                     label="Download Results",
                     data=json.dumps(results, indent=2),
