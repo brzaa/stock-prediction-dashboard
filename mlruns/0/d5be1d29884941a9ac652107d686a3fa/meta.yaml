@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/d5be1d29884941a9ac652107d686a3fa/artifacts
+end_time: 1735392875901
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: d5be1d29884941a9ac652107d686a3fa
+run_name: unruly-lynx-134
+run_uuid: d5be1d29884941a9ac652107d686a3fa
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735392863488
+status: 4
+tags: []
+user_id: root

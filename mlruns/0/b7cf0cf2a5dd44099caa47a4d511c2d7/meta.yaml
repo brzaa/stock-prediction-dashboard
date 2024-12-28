@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/b7cf0cf2a5dd44099caa47a4d511c2d7/artifacts
+end_time: 1735392510931
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: b7cf0cf2a5dd44099caa47a4d511c2d7
+run_name: powerful-wolf-812
+run_uuid: b7cf0cf2a5dd44099caa47a4d511c2d7
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735392498679
+status: 4
+tags: []
+user_id: root

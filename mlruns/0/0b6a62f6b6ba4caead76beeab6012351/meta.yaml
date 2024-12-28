@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/0b6a62f6b6ba4caead76beeab6012351/artifacts
+end_time: 1735392134936
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 0b6a62f6b6ba4caead76beeab6012351
+run_name: angry-roo-202
+run_uuid: 0b6a62f6b6ba4caead76beeab6012351
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735392119921
+status: 4
+tags: []
+user_id: root

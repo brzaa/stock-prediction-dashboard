@@ -1,0 +1,14 @@
+aliases: []
+creation_timestamp: 1735392875893
+current_stage: None
+description: null
+last_updated_timestamp: 1735392875893
+name: stock_prediction_lgb_model
+run_id: d5be1d29884941a9ac652107d686a3fa
+run_link: null
+source: file:///content/stock-prediction-dashboard/mlruns/0/d5be1d29884941a9ac652107d686a3fa/artifacts/model
+status: READY
+status_message: null
+storage_location: file:///content/stock-prediction-dashboard/mlruns/0/d5be1d29884941a9ac652107d686a3fa/artifacts/model
+user_id: null
+version: 4
