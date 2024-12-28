@@ -1,0 +1,16 @@
+streamlit
+pandas
+numpy
+plotly
+xgboost
+mlflow
+google-cloud-storage
+python-dotenv
+
+# Write .gitignore
+%%writefile .gitignore
+*.pyc
+__pycache__/
+.env
+.ipynb_checkpoints/
+mlruns/
