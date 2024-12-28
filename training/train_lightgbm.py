@@ -5,13 +5,13 @@ import pandas as pd
 import talib
 import lightgbm as lgb
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 import numpy as np
 from google.cloud import storage
 import logging
 from typing import Tuple, Any
 from datetime import datetime
-import json
+import pickle
 
 # Configure logging
 logging.basicConfig(
@@ -79,19 +79,15 @@ def train_and_log_model_colab(
         X_train = X_train.select_dtypes(include=[np.number])
         X_test = X_test.select_dtypes(include=[np.number])
 
-        scaler = StandardScaler()
+        scaler = MinMaxScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
-
-        mlflow.log_param("train_size", len(X_train))
-        mlflow.log_param("test_size", len(X_test))
-        mlflow.log_param("split_date", split_date)
 
         best_params = {
             'num_leaves': 31,
             'max_depth': 10,
             'learning_rate': 0.05,
-            'n_estimators': 400,
+            'n_estimators': 200,
             'min_child_samples': 20,
             'subsample': 0.8,
             'colsample_bytree': 0.8,
@@ -130,23 +126,21 @@ def train_and_log_model_colab(
             'parameters': best_params,
             'predictions': y_pred.tolist(),
             'actual_values': y_test.tolist(),
-            'feature_names': list(X_test.columns),
-            'feature_importance': model.feature_importances_.tolist()
+            'feature_names': list(X_test.columns)
         }
         
         save_model_results(run.info.run_id, results, bucket_name)
 
         model_path = "/content/models"
         os.makedirs(model_path, exist_ok=True)
-        mlflow.lightgbm.log_model(
-            model,
-            "model",
-            registered_model_name="stock_prediction_lgb_model"
-        )
 
-        model.save_model(f"{model_path}/model.txt")
-        model_blob = bucket.blob('models/lightgbm/model.txt')
-        model_blob.upload_from_filename(f"{model_path}/model.txt")
+        # Save the model using pickle
+        model_save_path = f"{model_path}/lightgbm_model.pkl"
+        with open(model_save_path, 'wb') as f:
+            pickle.dump(model, f)
+
+        model_blob = bucket.blob(f'models/lightgbm/{run.info.run_id}/lightgbm_model.pkl')
+        model_blob.upload_from_filename(model_save_path)
 
         logger.info(f"Run ID: {run.info.run_id}")
         logger.info(f"Metrics - MSE: {mse:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}, MAE: {mae:.4f}")
