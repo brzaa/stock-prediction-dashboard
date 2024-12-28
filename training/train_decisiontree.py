@@ -20,24 +20,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def save_model_results(run_id: str, model_type: str, results: dict, bucket_name: str = "mlops-brza"):
-    """Save model results organized by model type and date"""
+def save_model_results(run_id: str, results: dict, bucket_name: str = "mlops-brza"):
+    """Save model results organized by run ID"""
     try:
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         
-        # Organize results by model type
-        output_path = f"model_outputs/{model_type}/{run_id}/results.json"
+        # Save results.json in model_outputs/<run_id>/
+        output_path = f"model_outputs/{run_id}/results.json"
         blob = bucket.blob(output_path)
         blob.upload_from_string(
             json.dumps(results, indent=2),
             content_type='application/json'
         )
         
-        # Also save a summary for easy lookup
+        # Save a summary for easy lookup in model_outputs/summary/
         summary = {
             'run_id': run_id,
-            'model_type': model_type,
             'timestamp': results['timestamp'],
             'metrics': results['metrics']
         }
@@ -53,11 +52,9 @@ def save_model_results(run_id: str, model_type: str, results: dict, bucket_name:
 def train_and_log_model_colab(
     project_id: str,
     bucket_name: str = "mlops-brza",
-    split_date: str = '2022-01-01',
-    model_type: str = "decision_tree"  # Simplified to just "decision_tree"
+    split_date: str = '2022-01-01'
 ) -> Tuple[str, Any]:
     with mlflow.start_run() as run:
-        logger.info(f"Starting training for model type: {model_type}")
         logger.info("Fetching data from GCS...")
         client = storage.Client(project=project_id)
         bucket = client.get_bucket(bucket_name)
@@ -99,7 +96,6 @@ def train_and_log_model_colab(
         mlflow.log_param("train_size", len(X_train))
         mlflow.log_param("test_size", len(X_test))
         mlflow.log_param("split_date", split_date)
-        mlflow.log_param("model_type", model_type)
 
         best_params = {
             'max_depth': 10,
@@ -108,7 +104,7 @@ def train_and_log_model_colab(
             'random_state': 42
         }
 
-        logger.info(f"Training {model_type} model...")
+        logger.info("Training Decision Tree model...")
         model = DecisionTreeRegressor(**best_params)
         model.fit(X_train_scaled, y_train)
 
@@ -130,7 +126,6 @@ def train_and_log_model_colab(
         # Save comprehensive results
         results = {
             'run_id': run.info.run_id,
-            'model_type': model_type,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'metrics': {
                 'mse': float(mse),
@@ -146,18 +141,19 @@ def train_and_log_model_colab(
             'dates': test_data.index.strftime('%Y-%m-%d').tolist()
         }
         
-        # Save results organized by model type
-        save_model_results(run.info.run_id, model_type, results, bucket_name)
+        # Save results organized by run ID
+        save_model_results(run.info.run_id, results, bucket_name)
 
+        # Save model locally first
         model_path = "/content/models"
         os.makedirs(model_path, exist_ok=True)
 
-        # Save model with model type in path
+        # Save model with run ID in path
         import pickle
-        model_save_path = f"{model_path}/{model_type}_model.pkl"
+        model_save_path = f"{model_path}/decision_tree_model.pkl"
         with open(model_save_path, 'wb') as f:
             pickle.dump(model, f)
-        model_blob = bucket.blob(f'models/{model_type}/{run.info.run_id}/model.pkl')
+        model_blob = bucket.blob(f'models/decision_tree/{run.info.run_id}/model.pkl')
         model_blob.upload_from_filename(model_save_path)
 
         logger.info(f"Run ID: {run.info.run_id}")
@@ -169,10 +165,9 @@ def train_and_log_model_colab(
 if __name__ == "__main__":
     project_id = "mlops-thesis"
     
-    # Train single model
+    # Train a single model
     print("\nTraining decision tree model...")
     run_id, _, _, _, _ = train_and_log_model_colab(
-        project_id=project_id,
-        model_type="decision_tree"  # Simplified model type
+        project_id=project_id
     )
     print(f"Completed decision tree training. Run ID: {run_id}\n")
