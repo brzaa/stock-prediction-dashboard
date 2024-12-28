@@ -20,29 +20,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def save_model_results(run_id: str, model_type: str, results: dict, bucket_name: str = "mlops-brza"):
-    """Save model results organized by model type and date"""
+def save_model_results(run_id: str, results: dict, bucket_name: str = "mlops-brza"):
+    """Save model results to GCS"""
     try:
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         
-        # Organize results by model type
-        output_path = f"model_outputs/{model_type}/{run_id}/results.json"
+        output_path = f"model_outputs/{run_id}/results.json"
         blob = bucket.blob(output_path)
         blob.upload_from_string(
             json.dumps(results, indent=2),
             content_type='application/json'
         )
-        
-        # Also save a summary for easy lookup
-        summary = {
-            'run_id': run_id,
-            'model_type': model_type,
-            'timestamp': results['timestamp'],
-            'metrics': results['metrics']
-        }
-        summary_blob = bucket.blob(f'model_outputs/summary/{run_id}.json')
-        summary_blob.upload_from_string(json.dumps(summary, indent=2))
         
         logger.info(f"Results saved to: gs://{bucket_name}/{output_path}")
         return True
@@ -53,11 +42,9 @@ def save_model_results(run_id: str, model_type: str, results: dict, bucket_name:
 def train_and_log_model_colab(
     project_id: str,
     bucket_name: str = "mlops-brza",
-    split_date: str = '2022-01-01',
-    model_type: str = "xgboost"  # Added model_type parameter
+    split_date: str = '2022-01-01'
 ) -> Tuple[str, Any]:
     with mlflow.start_run() as run:
-        logger.info(f"Starting training for model type: {model_type}")
         logger.info("Fetching data from GCS...")
         client = storage.Client(project=project_id)
         bucket = client.get_bucket(bucket_name)
@@ -99,7 +86,6 @@ def train_and_log_model_colab(
         mlflow.log_param("train_size", len(X_train))
         mlflow.log_param("test_size", len(X_test))
         mlflow.log_param("split_date", split_date)
-        mlflow.log_param("model_type", model_type)
 
         best_params = {
             'colsample_bytree': 1.0,
@@ -110,7 +96,7 @@ def train_and_log_model_colab(
             'random_state': 42
         }
 
-        logger.info(f"Training {model_type} model...")
+        logger.info("Training XGBoost model...")
         model = xgb.XGBRegressor(**best_params)
         model.fit(X_train_scaled, y_train)
 
@@ -129,10 +115,8 @@ def train_and_log_model_colab(
             "mae": mae
         })
 
-        # Save comprehensive results
         results = {
             'run_id': run.info.run_id,
-            'model_type': model_type,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'metrics': {
                 'mse': float(mse),
@@ -144,21 +128,22 @@ def train_and_log_model_colab(
             'predictions': y_pred.tolist(),
             'actual_values': y_test.tolist(),
             'feature_names': list(X_test.columns),
-            'feature_importance': model.feature_importances_.tolist(),
-            'dates': test_data.index.strftime('%Y-%m-%d').tolist()
+            'feature_importance': model.feature_importances_.tolist()
         }
         
-        # Save results organized by model type
-        save_model_results(run.info.run_id, model_type, results, bucket_name)
+        save_model_results(run.info.run_id, results, bucket_name)
 
         model_path = "/content/models"
         os.makedirs(model_path, exist_ok=True)
+        mlflow.xgboost.log_model(
+            model,
+            "model",
+            registered_model_name="stock_prediction_model"
+        )
 
-        # Save model with model type in path
-        model_save_path = f"{model_path}/{model_type}_model.bst"
-        model.save_model(model_save_path)
-        model_blob = bucket.blob(f'models/{model_type}/{run.info.run_id}/model.bst')
-        model_blob.upload_from_filename(model_save_path)
+        model.save_model(f"{model_path}/model.bst")
+        model_blob = bucket.blob('models/xgboost/model.bst')
+        model_blob.upload_from_filename(f"{model_path}/model.bst")
 
         logger.info(f"Run ID: {run.info.run_id}")
         logger.info(f"Metrics - MSE: {mse:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}, MAE: {mae:.4f}")
@@ -168,18 +153,4 @@ def train_and_log_model_colab(
 
 if __name__ == "__main__":
     project_id = "mlops-thesis"
-    
-    # Train multiple model types or variations
-    model_types = [
-        "xgboost_default",
-        "xgboost_optimized",
-        "xgboost_rolling"  # Add more model types as needed
-    ]
-    
-    for model_type in model_types:
-        print(f"\nTraining {model_type}...")
-        run_id, _, _, _, _ = train_and_log_model_colab(
-            project_id=project_id,
-            model_type=model_type
-        )
-        print(f"Completed {model_type} training. Run ID: {run_id}\n")
+    run_id, _, _, _, _ = train_and_log_model_colab(project_id)
