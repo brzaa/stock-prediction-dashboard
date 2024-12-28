@@ -13,6 +13,7 @@ from google.cloud import storage
 import logging
 from typing import Tuple, Any
 from datetime import datetime
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -182,6 +183,8 @@ def train_and_log_model_colab(
             'parameters': params,
             'predictions': y_pred.flatten().tolist(),
             'actual_values': y_test.tolist(),
+            'feature_importance': [],  # No feature importance for LSTM
+            'feature_names': [],  # No specific features for LSTM
             'dates': test_data.index.strftime('%Y-%m-%d').tolist()
         }
 
