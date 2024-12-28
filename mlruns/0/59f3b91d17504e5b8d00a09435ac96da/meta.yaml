@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/59f3b91d17504e5b8d00a09435ac96da/artifacts
+end_time: 1735389150849
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 59f3b91d17504e5b8d00a09435ac96da
+run_name: redolent-shrew-293
+run_uuid: 59f3b91d17504e5b8d00a09435ac96da
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735389145164
+status: 3
+tags: []
+user_id: root

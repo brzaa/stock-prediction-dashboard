@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/e51dbb00672b479fb0287c4cd520a077/artifacts
+end_time: 1735388902572
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: e51dbb00672b479fb0287c4cd520a077
+run_name: gaudy-hound-925
+run_uuid: e51dbb00672b479fb0287c4cd520a077
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735388896865
+status: 3
+tags: []
+user_id: root

@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/9f94acfd9e8f4216a3e213e1cd215fcc/artifacts
+end_time: 1735388413769
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 9f94acfd9e8f4216a3e213e1cd215fcc
+run_name: bright-donkey-519
+run_uuid: 9f94acfd9e8f4216a3e213e1cd215fcc
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735388399493
+status: 3
+tags: []
+user_id: root

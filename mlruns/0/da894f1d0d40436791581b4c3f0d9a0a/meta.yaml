@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/da894f1d0d40436791581b4c3f0d9a0a/artifacts
+end_time: 1735388481484
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: da894f1d0d40436791581b4c3f0d9a0a
+run_name: worried-snake-736
+run_uuid: da894f1d0d40436791581b4c3f0d9a0a
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735388474824
+status: 4
+tags: []
+user_id: root

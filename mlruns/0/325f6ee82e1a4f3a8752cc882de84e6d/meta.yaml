@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/325f6ee82e1a4f3a8752cc882de84e6d/artifacts
+end_time: 1735388514487
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 325f6ee82e1a4f3a8752cc882de84e6d
+run_name: orderly-hawk-304
+run_uuid: 325f6ee82e1a4f3a8752cc882de84e6d
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735388508737
+status: 3
+tags: []
+user_id: root
