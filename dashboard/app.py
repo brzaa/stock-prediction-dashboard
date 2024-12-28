@@ -30,12 +30,12 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
         # List of possible paths to check
         paths = [
             f'model_outputs/{run_id}/results.json',  # Default path
+            f'model_outputs/lightgbm/{run_id}/results.json',  # LightGBM specific path
             f'model_outputs/lstm/{run_id}/results.json',  # LSTM specific path
             f'model_outputs/decision_tree/{run_id}/results.json',  # Decision Tree path
             f'model_outputs/xgboost/{run_id}/results.json'  # XGBoost path
         ]
         
-        # Try each path
         for path in paths:
             blob = bucket.blob(path)
             if blob.exists():
@@ -57,9 +57,8 @@ def load_all_models_results(bucket_name: str) -> list:
         
         # List all results files
         all_results = []
-        model_types = ['xgboost', 'lstm', 'decision_tree']
+        model_types = ['xgboost', 'lstm', 'decision_tree', 'lightgbm']
         
-        # Search in all possible paths
         for blob in bucket.list_blobs(prefix='model_outputs/'):
             if blob.name.endswith('results.json'):
                 try:
@@ -71,7 +70,8 @@ def load_all_models_results(bucket_name: str) -> list:
                                 results['model_type'] = model_type
                                 break
                     all_results.append(results)
-                except:
+                except Exception as e:
+                    st.warning(f"Error reading results from {blob.name}: {e}")
                     continue
                     
         return all_results
@@ -134,7 +134,6 @@ def plot_feature_importance(results):
 
 def plot_model_comparison(all_results):
     """Create comparison plots for model metrics"""
-    # Prepare data for comparison
     comparison_data = []
     for result in all_results:
         comparison_data.append({
@@ -208,10 +207,9 @@ def main():
             st.warning("No model results found")
     
     else:
-        # Individual model analysis
         model_type = st.sidebar.selectbox(
             "Select Model Type",
-            ["XGBoost", "Decision Tree", "LSTM"]
+            ["LightGBM", "XGBoost", "Decision Tree", "LSTM"]
         )
         
         run_id = st.sidebar.text_input("Enter Run ID")
@@ -220,11 +218,9 @@ def main():
             results = load_model_results("mlops-brza", run_id)
             
             if results:
-                # Display model type and timestamp
                 st.subheader(f"Model Type: {results.get('model_type', model_type)}")
                 st.text(f"Training Time: {results['timestamp']}")
                 
-                # Display metrics
                 st.header("Model Performance Metrics")
                 metrics = results['metrics']
                 
@@ -238,26 +234,21 @@ def main():
                 with col4:
                     st.metric("MAE", f"{metrics['mae']:.2f}")
                 
-                # Predictions plot
                 st.header("Model Predictions")
                 plot_predictions(results)
                 
-                # Feature importance (only for tree-based models)
-                if model_type in ["XGBoost", "Decision Tree"]:
+                if model_type in ["LightGBM", "XGBoost", "Decision Tree"]:
                     st.header("Feature Importance")
                     plot_feature_importance(results)
                 
-                # Model parameters
                 with st.expander("Model Parameters"):
                     st.json(results['parameters'])
                 
-                # Training details
                 with st.expander("Training Details"):
                     st.text(f"Run ID: {results['run_id']}")
                     st.text(f"Model Type: {results.get('model_type', model_type)}")
                     st.text(f"Training Time: {results['timestamp']}")
                 
-                # Download results
                 st.sidebar.download_button(
                     label="Download Results",
                     data=json.dumps(results, indent=2),

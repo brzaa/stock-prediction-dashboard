@@ -1,11 +1,11 @@
 import os
 import mlflow
-import mlflow.sklearn
+import mlflow.lightgbm
 import pandas as pd
 import talib
-from sklearn.tree import DecisionTreeRegressor
+import lightgbm as lgb
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 import numpy as np
 from google.cloud import storage
 import logging
@@ -21,19 +21,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def save_model_results(run_id: str, results: dict, bucket_name: str = "mlops-brza"):
-    """Save model results organized by run ID"""
+    """Save model results to GCS"""
     try:
-        logger.info(f"Saving results for run ID: {run_id}")
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         
-        # Save results.json in model_outputs/<run_id>/
-        output_path = f"model_outputs/{run_id}/results.json"
+        # Save results.json in model_outputs/lightgbm/<run_id>/
+        output_path = f"model_outputs/lightgbm/{run_id}/results.json"
         blob = bucket.blob(output_path)
         blob.upload_from_string(
             json.dumps(results, indent=2),
             content_type='application/json'
         )
+        
         logger.info(f"Results saved to: gs://{bucket_name}/{output_path}")
         return True
     except Exception as e:
@@ -80,7 +80,7 @@ def train_and_log_model_colab(
         X_train = X_train.select_dtypes(include=[np.number])
         X_test = X_test.select_dtypes(include=[np.number])
 
-        scaler = StandardScaler()
+        scaler = MinMaxScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
 
@@ -89,14 +89,21 @@ def train_and_log_model_colab(
         mlflow.log_param("split_date", split_date)
 
         best_params = {
-            'max_depth': 10,
-            'min_samples_split': 20,
-            'min_samples_leaf': 10,
+            'num_leaves': 31,
+            'max_depth': 5,
+            'learning_rate': 0.1,
+            'n_estimators': 100,
+            'min_child_samples': 5,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'reg_alpha': 0.1,
+            'reg_lambda': 0.1,
+            'min_child_weight': 1e-5,
             'random_state': 42
         }
 
-        logger.info("Training Decision Tree model...")
-        model = DecisionTreeRegressor(**best_params)
+        logger.info("Training LightGBM model...")
+        model = lgb.LGBMRegressor(**best_params)
         model.fit(X_train_scaled, y_train)
 
         y_pred = model.predict(X_test_scaled)
@@ -114,9 +121,9 @@ def train_and_log_model_colab(
             "mae": mae
         })
 
-        # Save comprehensive results
         results = {
             'run_id': run.info.run_id,
+            'model_type': 'lightgbm',
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'metrics': {
                 'mse': float(mse),
@@ -132,33 +139,42 @@ def train_and_log_model_colab(
             'dates': test_data.index.strftime('%Y-%m-%d').tolist()
         }
         
-        # Save results organized by run ID
         save_model_results(run.info.run_id, results, bucket_name)
 
         # Save model locally first
         model_path = "/content/models"
         os.makedirs(model_path, exist_ok=True)
 
-        # Save model with run ID in path
-        import pickle
-        model_save_path = f"{model_path}/decision_tree_model.pkl"
-        with open(model_save_path, 'wb') as f:
-            pickle.dump(model, f)
-        model_blob = bucket.blob(f'models/decision_tree/{run.info.run_id}/model.pkl')
+        # Save the LightGBM model
+        model_save_path = f"{model_path}/lightgbm_model.txt"
+        model.booster_.save_model(model_save_path)
+        
+        # Upload to GCS
+        model_blob = bucket.blob(f'models/lightgbm/{run.info.run_id}/model.txt')
         model_blob.upload_from_filename(model_save_path)
 
+        # Log model with MLflow
+        mlflow.lightgbm.log_model(
+            model,
+            "model",
+            registered_model_name="stock_prediction_lgb_model"
+        )
+
+        # Print run ID clearly
+        print("\n" + "="*50)
+        print(f"Training completed successfully!")
+        print(f"Run ID for dashboard: {run.info.run_id}")
+        print("="*50 + "\n")
+        
         logger.info(f"Run ID: {run.info.run_id}")
         logger.info(f"Metrics - MSE: {mse:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}, MAE: {mae:.4f}")
-        print(f"Run ID to use in dashboard: {run.info.run_id}")
 
         return run.info.run_id, scaler, model, X_test_scaled, y_test
 
 if __name__ == "__main__":
     project_id = "mlops-thesis"
-    
-    # Train a single model
-    print("\nTraining decision tree model...")
-    run_id, _, _, _, _ = train_and_log_model_colab(
-        project_id=project_id
-    )
-    print(f"Completed decision tree training. Run ID: {run_id}\n")
+    try:
+        run_id, _, _, _, _ = train_and_log_model_colab(project_id)
+        print(f"\nUse this Run ID in the dashboard: {run_id}\n")
+    except Exception as e:
+        logger.error(f"Error during training: {str(e)}")
