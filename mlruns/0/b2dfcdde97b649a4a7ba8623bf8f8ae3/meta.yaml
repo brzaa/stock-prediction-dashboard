@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/b2dfcdde97b649a4a7ba8623bf8f8ae3/artifacts
+end_time: 1735377578000
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: b2dfcdde97b649a4a7ba8623bf8f8ae3
+run_name: skittish-boar-762
+run_uuid: b2dfcdde97b649a4a7ba8623bf8f8ae3
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735377572366
+status: 3
+tags: []
+user_id: root

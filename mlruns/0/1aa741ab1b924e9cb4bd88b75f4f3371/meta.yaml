@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/1aa741ab1b924e9cb4bd88b75f4f3371/artifacts
+end_time: 1735377583664
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 1aa741ab1b924e9cb4bd88b75f4f3371
+run_name: dapper-donkey-939
+run_uuid: 1aa741ab1b924e9cb4bd88b75f4f3371
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735377578003
+status: 3
+tags: []
+user_id: root

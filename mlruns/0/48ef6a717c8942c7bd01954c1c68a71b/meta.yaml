@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/48ef6a717c8942c7bd01954c1c68a71b/artifacts
+end_time: 1735378151732
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 48ef6a717c8942c7bd01954c1c68a71b
+run_name: marvelous-shoat-34
+run_uuid: 48ef6a717c8942c7bd01954c1c68a71b
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735378136891
+status: 3
+tags: []
+user_id: root

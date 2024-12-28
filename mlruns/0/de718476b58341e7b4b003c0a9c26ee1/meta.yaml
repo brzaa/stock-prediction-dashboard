@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/de718476b58341e7b4b003c0a9c26ee1/artifacts
+end_time: 1735378180528
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: de718476b58341e7b4b003c0a9c26ee1
+run_name: calm-rat-39
+run_uuid: de718476b58341e7b4b003c0a9c26ee1
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735378166290
+status: 3
+tags: []
+user_id: root

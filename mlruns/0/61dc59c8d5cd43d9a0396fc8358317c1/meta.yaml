@@ -1,0 +1,15 @@
+artifact_uri: file:///content/stock-prediction-dashboard/mlruns/0/61dc59c8d5cd43d9a0396fc8358317c1/artifacts
+end_time: 1735377572362
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 61dc59c8d5cd43d9a0396fc8358317c1
+run_name: delicate-hog-661
+run_uuid: 61dc59c8d5cd43d9a0396fc8358317c1
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1735377566671
+status: 3
+tags: []
+user_id: root
