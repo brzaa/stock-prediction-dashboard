@@ -5,7 +5,7 @@ import pandas as pd
 import json
 import plotly.graph_objects as go
 import plotly.express as px
-from utils.live_prediction_service import StockPredictor  # Use StockPredictor
+from utils.live_prediction_service import StockPredictor
 import logging
 
 # Page configuration
@@ -48,6 +48,61 @@ def plot_predictions(results):
         height=500
     )
     st.plotly_chart(fig, use_container_width=True)
+
+def plot_model_comparison(all_results):
+    """Create comparison plots for model metrics"""
+    comparison_data = []
+    for result in all_results:
+        comparison_data.append({
+            'Model Type': result.get('model_type', 'Unknown'),
+            'Run ID': result['run_id'],
+            'Timestamp': result['timestamp'],
+            'MSE': result['metrics']['mse'],
+            'RMSE': result['metrics']['rmse'],
+            'R²': result['metrics']['r2'],
+            'MAE': result['metrics']['mae']
+        })
+    
+    df = pd.DataFrame(comparison_data)
+    
+    # Create comparison plots
+    metrics = ['MSE', 'RMSE', 'R²', 'MAE']
+    for metric in metrics:
+        fig = px.bar(
+            df,
+            x='Model Type',
+            y=metric,
+            title=f'{metric} Comparison Across Models',
+            color='Model Type',
+            hover_data=['Run ID', 'Timestamp']
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Display best models table
+    st.header("Best Models by Metric")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Lowest Error Models")
+        best_mse = df.loc[df['MSE'].idxmin()]
+        best_rmse = df.loc[df['RMSE'].idxmin()]
+        best_mae = df.loc[df['MAE'].idxmin()]
+        
+        st.write("Best MSE:", best_mse['Model Type'], f"({best_mse['MSE']:.4f})")
+        st.write("Best RMSE:", best_rmse['Model Type'], f"({best_rmse['RMSE']:.4f})")
+        st.write("Best MAE:", best_mae['Model Type'], f"({best_mae['MAE']:.4f})")
+    
+    with col2:
+        st.subheader("Highest R² Model")
+        best_r2 = df.loc[df['R²'].idxmax()]
+        st.write("Best R²:", best_r2['Model Type'], f"({best_r2['R²']:.4f})")
+    
+    # Detailed comparison table
+    st.header("Detailed Model Comparison")
+    st.dataframe(
+        df.style.highlight_min(['MSE', 'RMSE', 'MAE'])
+            .highlight_max(['R²'])
+    )
 
 def main():
     st.title("📈 Stock Price Prediction Dashboard")
@@ -128,7 +183,6 @@ def main():
         
         if run_id:
             try:
-                # Replace with logic to fetch specific run data
                 predictor = StockPredictor(bucket_name=bucket_name)
                 blob_path = f"model_outputs/{model_type.lower()}/{run_id}/results.json"
                 client = predictor.client
@@ -178,8 +232,24 @@ def main():
     
     elif view_type == "Model Comparison":
         st.header("📈 Model Performance Comparison")
-        # Logic to fetch and display comparison data
-        st.info("Model comparison is under development.")
+        try:
+            predictor = StockPredictor(bucket_name=bucket_name)
+            client = predictor.client
+            bucket = client.bucket(bucket_name)
+            
+            # Fetch results for all models
+            all_results = []
+            for blob in bucket.list_blobs(prefix="model_outputs/"):
+                if blob.name.endswith("results.json"):
+                    results = json.loads(blob.download_as_string())
+                    all_results.append(results)
+            
+            if all_results:
+                plot_model_comparison(all_results)
+            else:
+                st.warning("No model results found")
+        except Exception as e:
+            st.error(f"Error fetching model comparison: {str(e)}")
 
 if __name__ == "__main__":
     main()
