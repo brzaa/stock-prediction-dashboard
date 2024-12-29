@@ -1,3 +1,4 @@
+
 import os
 import pandas as pd
 import numpy as np
@@ -55,6 +56,7 @@ class StockPredictor:
                 logger.error("No stock data fetched. Please check the ticker symbol or network.")
                 raise ValueError("No stock data fetched.")
             
+            # Adjust column names if necessary
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = ['_'.join(col).strip() for col in data.columns.values]
             data.columns = data.columns.str.lower()
