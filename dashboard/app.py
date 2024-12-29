@@ -1,4 +1,3 @@
-# dashboard/app.py
 import streamlit as st
 import pandas as pd
 from google.cloud import storage
@@ -6,7 +5,8 @@ from google.oauth2 import service_account
 import json
 import plotly.graph_objects as go
 import plotly.express as px
-from utils.prediction_reader import get_latest_predictions
+from datetime import datetime
+import time
 
 # Page configuration
 st.set_page_config(
@@ -15,26 +15,43 @@ st.set_page_config(
     layout="wide"
 )
 
+# Constants
+AVAILABLE_MODELS = ["XGBoost", "LSTM", "Decision Tree", "LightGBM"]
+MODEL_TYPE_MAPPING = {
+    "XGBoost": "xgboost",
+    "LSTM": "lstm",
+    "Decision Tree": "decision_tree",
+    "LightGBM": "lightgbm"
+}
+
 @st.cache_resource
 def get_gcs_client():
     """Initialize GCS client with credentials"""
-    credentials = service_account.Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"]
-    )
-    return storage.Client(credentials=credentials)
+    try:
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"]
+        )
+        return storage.Client(credentials=credentials)
+    except Exception as e:
+        st.error(f"Error initializing GCS client: {str(e)}")
+        return None
 
 def load_model_results(bucket_name: str, run_id: str) -> dict:
     """Load model results from GCS with multiple path checking"""
     try:
         client = get_gcs_client()
+        if not client:
+            return None
+            
         bucket = client.bucket(bucket_name)
         
+        # Define all possible paths for model results
         paths = [
-            f'model_outputs/{run_id}/results.json',  # Default path
-            f'model_outputs/lightgbm/{run_id}/results.json',  # LightGBM path
-            f'model_outputs/lstm/{run_id}/results.json',  # LSTM specific path
-            f'model_outputs/decision_tree/{run_id}/results.json',  # Decision Tree path
-            f'model_outputs/xgboost/{run_id}/results.json'  # XGBoost path
+            f'model_outputs/{run_id}/results.json',
+            f'model_outputs/lightgbm/{run_id}/results.json',
+            f'model_outputs/lstm/{run_id}/results.json',
+            f'model_outputs/decision_tree/{run_id}/results.json',
+            f'model_outputs/xgboost/{run_id}/results.json'
         ]
         
         for path in paths:
@@ -54,8 +71,10 @@ def load_all_models_results(bucket_name: str) -> list:
     """Load results from all models for comparison"""
     try:
         client = get_gcs_client()
+        if not client:
+            return []
+            
         bucket = client.bucket(bucket_name)
-        
         all_results = []
         model_types = ['xgboost', 'lstm', 'decision_tree', 'lightgbm']
         
@@ -71,7 +90,8 @@ def load_all_models_results(bucket_name: str) -> list:
                                 results['model_type'] = model_type
                                 break
                     all_results.append(results)
-                except:
+                except Exception as e:
+                    st.warning(f"Skipping malformed result file: {blob.name}")
                     continue
                     
         return all_results
@@ -79,11 +99,34 @@ def load_all_models_results(bucket_name: str) -> list:
         st.error(f"Error loading results: {str(e)}")
         return []
 
+def get_latest_predictions(model_type: str) -> dict:
+    """Fetch latest predictions for a specific model"""
+    try:
+        client = get_gcs_client()
+        if not client:
+            return None
+            
+        bucket = client.bucket("mlops-brza")
+        blob = bucket.blob(f'live_predictions/{model_type}/latest.json')
+        
+        if not blob.exists():
+            st.warning(f"No predictions found for {model_type}")
+            return None
+            
+        return json.loads(blob.download_as_string())
+    except Exception as e:
+        st.error(f"Error fetching predictions: {str(e)}")
+        return None
+
 def plot_predictions(results):
     """Plot predictions vs actual values"""
+    if not results or 'predictions' not in results or 'actual_values' not in results:
+        st.error("Invalid results format for plotting")
+        return
+        
     fig = go.Figure()
     
-    # Use dates if available
+    # Use dates if available, otherwise use index
     x_values = results.get('dates', list(range(len(results['actual_values']))))
     
     fig.add_trace(go.Scatter(
@@ -134,18 +177,27 @@ def plot_feature_importance(results):
 
 def plot_model_comparison(all_results):
     """Create comparison plots for model metrics"""
+    if not all_results:
+        st.warning("No results available for comparison")
+        return
+        
     comparison_data = []
     for result in all_results:
-        comparison_data.append({
-            'Model Type': result.get('model_type', 'Unknown'),
-            'Run ID': result['run_id'],
-            'Timestamp': result['timestamp'],
-            'MSE': result['metrics']['mse'],
-            'RMSE': result['metrics']['rmse'],
-            'R²': result['metrics']['r2'],
-            'MAE': result['metrics']['mae']
-        })
+        if 'metrics' in result and 'model_type' in result:
+            comparison_data.append({
+                'Model Type': result.get('model_type', 'Unknown').title(),
+                'Run ID': result.get('run_id', 'N/A'),
+                'Timestamp': result.get('timestamp', 'N/A'),
+                'MSE': result['metrics']['mse'],
+                'RMSE': result['metrics']['rmse'],
+                'R²': result['metrics']['r2'],
+                'MAE': result['metrics']['mae']
+            })
     
+    if not comparison_data:
+        st.warning("No valid comparison data available")
+        return
+        
     df = pd.DataFrame(comparison_data)
     
     # Create comparison plots
@@ -187,6 +239,18 @@ def plot_model_comparison(all_results):
             .highlight_max(['R²'])
     )
 
+def display_metrics(metrics):
+    """Display model performance metrics in columns"""
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("MSE", f"{metrics['mse']:.2f}")
+    with col2:
+        st.metric("RMSE", f"{metrics['rmse']:.2f}")
+    with col3:
+        st.metric("R²", f"{metrics['r2']:.2f}")
+    with col4:
+        st.metric("MAE", f"{metrics['mae']:.2f}")
+
 def main():
     st.title("📈 Stock Price Prediction Dashboard")
     
@@ -202,9 +266,12 @@ def main():
         
         model_type = st.sidebar.selectbox(
             "Select Model",
-            ["XGBoost", "Decision Tree", "LightGBM"],
+            AVAILABLE_MODELS,
             key="live_model_select"
         )
+        
+        # Convert display name to internal name
+        internal_model_type = MODEL_TYPE_MAPPING[model_type]
         
         auto_refresh = st.sidebar.checkbox("Auto-refresh (30s)", value=False)
         if auto_refresh:
@@ -215,33 +282,25 @@ def main():
         if st.button("🔄 Refresh Predictions"):
             st.experimental_rerun()
         
-        results = get_latest_predictions(model_type.lower())
+        results = get_latest_predictions(internal_model_type)
         
         if results:
             st.success(f"Last Updated: {results['timestamp']}")
             
             st.subheader("Model Performance Metrics")
-            metrics = results['metrics']
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("MSE", f"{metrics['mse']:.2f}")
-            with col2:
-                st.metric("RMSE", f"{metrics['rmse']:.2f}")
-            with col3:
-                st.metric("R²", f"{metrics['r2']:.2f}")
-            with col4:
-                st.metric("MAE", f"{metrics['mae']:.2f}")
+            display_metrics(results['metrics'])
             
             st.subheader("Predictions vs Actual Values")
             plot_predictions(results)
             
             with st.expander("Model Parameters"):
-                st.json(results.get('parameters', {}))  # Safely handle missing 'parameters'
+                st.json(results.get('parameters', {}))
             
+            # Add download button for predictions
             st.sidebar.download_button(
                 label="Download Predictions",
                 data=json.dumps(results, indent=2),
-                file_name=f"{model_type.lower()}_predictions.json",
+                file_name=f"{internal_model_type}_predictions.json",
                 mime="application/json"
             )
         else:
@@ -254,12 +313,12 @@ def main():
         if all_results:
             plot_model_comparison(all_results)
         else:
-            st.warning("No results found.")
+            st.warning("No results found for comparison.")
     
-    else:
+    else:  # Individual Model Analysis
         model_type = st.sidebar.selectbox(
             "Select Model Type",
-            ["XGBoost", "Decision Tree", "LSTM", "LightGBM"]
+            AVAILABLE_MODELS
         )
         
         run_id = st.sidebar.text_input("Enter Run ID")
@@ -268,32 +327,28 @@ def main():
             results = load_model_results("mlops-brza", run_id)
             
             if results:
-                st.subheader(f"Model Type: {results['model_type']}")
-                st.text(f"Training Time: {results['timestamp']}")
+                st.subheader(f"Model Type: {results.get('model_type', 'Unknown').title()}")
+                st.text(f"Training Time: {results.get('timestamp', 'Unknown')}")
                 
                 st.header("Model Performance Metrics")
-                metrics = results['metrics']
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("MSE", f"{metrics['mse']:.2f}")
-                with col2:
-                    st.metric("RMSE", f"{metrics['rmse']:.2f}")
-                with col3:
-                    st.metric("R²", f"{metrics['r2']:.2f}")
-                with col4:
-                    st.metric("MAE", f"{metrics['mae']:.2f}")
+                display_metrics(results['metrics'])
                 
                 st.header("Model Predictions")
                 plot_predictions(results)
                 
+                # Show feature importance for tree-based models
+                if results.get('model_type') in ['xgboost', 'lightgbm', 'decision_tree']:
+                    st.header("Feature Importance")
+                    plot_feature_importance(results)
+                
                 with st.expander("Model Parameters"):
-                    st.json(results.get('parameters', {}))  # Safely handle missing 'parameters'
+                    st.json(results.get('parameters', {}))
                 
                 with st.expander("Training Details"):
                     st.text(f"Run ID: {run_id}")
                     st.text(f"Training Time: {results['timestamp']}")
             else:
-                st.warning("Run ID not found.")
+                st.warning("Run ID not found or invalid.")
 
 if __name__ == "__main__":
     main()
