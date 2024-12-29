@@ -1,12 +1,11 @@
+
 import streamlit as st
 import pandas as pd
-from google.cloud import storage
-from google.oauth2 import service_account
 import json
 import plotly.graph_objects as go
 import plotly.express as px
 from utils.prediction_reader import get_latest_predictions
-from utils.live_prediction_utils import LivePredictionPipeline
+from utils.live_prediction_service import StockPredictor  # Updated import
 
 # Page configuration
 st.set_page_config(
