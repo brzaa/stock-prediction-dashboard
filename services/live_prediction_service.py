@@ -29,6 +29,7 @@ class StockPredictor:
         self.client = storage.Client()
         self.bucket = self.client.bucket(bucket_name)
         self.scaler = StandardScaler()
+        self.time_steps = 5  # LSTM sequence length
         
         # Dictionary to store model-specific data preparation methods
         self.data_prep_methods = {
@@ -62,107 +63,133 @@ class StockPredictor:
 
     def _prepare_tree_based_data(self, data, train_size=0.8):
         """Prepare data for tree-based models"""
-        feature_cols = [col for col in data.columns if col != 'close']
-        
-        train_data = data[:int(len(data) * train_size)]
-        test_data = data[int(len(data) * train_size):]
-        
-        X_train = train_data[feature_cols]
-        y_train = train_data['close']
-        X_test = test_data[feature_cols]
-        y_test = test_data['close']
-        
-        # Scale the features
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
-        
-        return X_train_scaled, X_test_scaled, y_train, y_test, test_data.index, feature_cols
+        try:
+            feature_cols = [col for col in data.columns if col != 'close']
+            
+            train_data = data[:int(len(data) * train_size)]
+            test_data = data[int(len(data) * train_size):]
+            
+            X_train = train_data[feature_cols]
+            y_train = train_data['close']
+            X_test = test_data[feature_cols]
+            y_test = test_data['close']
+            
+            # Scale the features
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            X_test_scaled = self.scaler.transform(X_test)
+            
+            return X_train_scaled, X_test_scaled, y_train, y_test, test_data.index, feature_cols
+        except Exception as e:
+            logger.error(f"Error in _prepare_tree_based_data: {str(e)}")
+            raise
 
-    def _prepare_lstm_data(self, data, train_size=0.8, time_steps=5):
+    def _prepare_lstm_data(self, data, train_size=0.8):
         """Prepare data specifically for LSTM"""
-        X_train_scaled, X_test_scaled, y_train, y_test, test_dates, feature_cols = self._prepare_tree_based_data(data, train_size)
-        
-        # Create sequences for LSTM
-        def create_sequences(X, y):
-            Xs, ys = [], []
-            for i in range(len(X) - time_steps):
-                Xs.append(X[i:(i + time_steps)])
-                ys.append(y.iloc[i + time_steps] if isinstance(y, pd.Series) else y[i + time_steps])
-            return np.array(Xs), np.array(ys)
-        
-        X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train)
-        X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test)
-        
-        return X_train_seq, X_test_seq, y_train_seq, y_test_seq, test_dates[time_steps:], feature_cols
+        try:
+            X_train_scaled, X_test_scaled, y_train, y_test, test_dates, feature_cols = self._prepare_tree_based_data(data, train_size)
+            
+            def create_sequences(X, y):
+                Xs, ys = [], []
+                for i in range(len(X) - self.time_steps):
+                    sequence = X[i:(i + self.time_steps)]
+                    target = y.iloc[i + self.time_steps] if isinstance(y, pd.Series) else y[i + self.time_steps]
+                    Xs.append(sequence)
+                    ys.append(target)
+                return np.array(Xs), np.array(ys)
+            
+            X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train)
+            X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test)
+            
+            logger.info(f"LSTM sequences created. Train shape: {X_train_seq.shape}, Test shape: {X_test_seq.shape}")
+            return X_train_seq, X_test_seq, y_train_seq, y_test_seq, test_dates[self.time_steps:], feature_cols
+        except Exception as e:
+            logger.error(f"Error in _prepare_lstm_data: {str(e)}")
+            raise
 
     def train_xgboost(self, X_train, y_train):
         """Train XGBoost model"""
-        params = {
-            "objective": "reg:squarederror",
-            "max_depth": 5,
-            "learning_rate": 0.01,
-            "n_estimators": 500
-        }
-        model = xgb.XGBRegressor(**params)
-        model.fit(X_train, y_train)
-        logger.info("XGBoost model trained successfully")
-        return model, params
+        try:
+            params = {
+                "objective": "reg:squarederror",
+                "max_depth": 5,
+                "learning_rate": 0.01,
+                "n_estimators": 500
+            }
+            model = xgb.XGBRegressor(**params)
+            model.fit(X_train, y_train)
+            logger.info("XGBoost model trained successfully")
+            return model, params
+        except Exception as e:
+            logger.error(f"Error training XGBoost: {str(e)}")
+            raise
 
     def train_decision_tree(self, X_train, y_train):
         """Train Decision Tree model"""
-        params = {
-            "max_depth": 10,
-            "min_samples_split": 20,
-            "min_samples_leaf": 10
-        }
-        model = DecisionTreeRegressor(**params)
-        model.fit(X_train, y_train)
-        logger.info("Decision Tree model trained successfully")
-        return model, params
+        try:
+            params = {
+                "max_depth": 10,
+                "min_samples_split": 20,
+                "min_samples_leaf": 10
+            }
+            model = DecisionTreeRegressor(**params)
+            model.fit(X_train, y_train)
+            logger.info("Decision Tree model trained successfully")
+            return model, params
+        except Exception as e:
+            logger.error(f"Error training Decision Tree: {str(e)}")
+            raise
 
     def train_lightgbm(self, X_train, y_train):
         """Train LightGBM model"""
-        params = {
-            "objective": "regression",
-            "max_depth": 7,
-            "learning_rate": 0.05,
-            "n_estimators": 500,
-            "num_leaves": 31
-        }
-        model = LGBMRegressor(**params)
-        model.fit(X_train, y_train)
-        logger.info("LightGBM model trained successfully")
-        return model, params
+        try:
+            params = {
+                "objective": "regression",
+                "max_depth": 7,
+                "learning_rate": 0.05,
+                "n_estimators": 500,
+                "num_leaves": 31
+            }
+            model = LGBMRegressor(**params)
+            model.fit(X_train, y_train)
+            logger.info("LightGBM model trained successfully")
+            return model, params
+        except Exception as e:
+            logger.error(f"Error training LightGBM: {str(e)}")
+            raise
 
     def train_lstm(self, X_train, y_train):
         """Train LSTM model"""
-        input_shape = (X_train.shape[1], X_train.shape[2])
-        params = {
-            "lstm_units_1": 64,
-            "lstm_units_2": 32,
-            "dropout_rate": 0.2,
-            "time_steps": X_train.shape[1]
-        }
-        
-        model = Sequential([
-            Input(shape=input_shape),
-            LSTM(params["lstm_units_1"], return_sequences=True),
-            Dropout(params["dropout_rate"]),
-            LSTM(params["lstm_units_2"]),
-            Dropout(params["dropout_rate"]),
-            Dense(1)
-        ])
-        
-        model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
-        model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0)
-        logger.info("LSTM model trained successfully")
-        return model, params
+        try:
+            input_shape = (X_train.shape[1], X_train.shape[2])
+            params = {
+                "lstm_units_1": 64,
+                "lstm_units_2": 32,
+                "dropout_rate": 0.2,
+                "time_steps": self.time_steps
+            }
+            
+            model = Sequential([
+                Input(shape=input_shape),
+                LSTM(params["lstm_units_1"], return_sequences=True),
+                Dropout(params["dropout_rate"]),
+                LSTM(params["lstm_units_2"]),
+                Dropout(params["dropout_rate"]),
+                Dense(1)
+            ])
+            
+            model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+            model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0)
+            logger.info("LSTM model trained successfully")
+            return model, params
+        except Exception as e:
+            logger.error(f"Error training LSTM: {str(e)}")
+            raise
 
     def predict_model(self, model, X_test, model_type):
         """Make predictions based on model type"""
         try:
             if model_type == 'lstm':
-                predictions = model.predict(X_test).flatten()
+                predictions = model.predict(X_test, verbose=0).flatten()
             else:
                 predictions = model.predict(X_test)
             return predictions
@@ -181,6 +208,7 @@ class StockPredictor:
         
         try:
             data = self.fetch_stock_data()
+            results_saved = []
             
             for model_type in model_types:
                 try:
@@ -224,17 +252,22 @@ class StockPredictor:
                         content_type='application/json'
                     )
                     logger.info(f"Successfully saved predictions for {model_type}")
+                    results_saved.append(model_type)
                     
                 except Exception as e:
                     logger.error(f"Error processing {model_type}: {str(e)}")
                     continue
+            
+            return results_saved
                     
         except Exception as e:
             logger.error(f"Error in run_predictions: {str(e)}")
             raise
 
 if __name__ == "__main__":
-    predictor = StockPredictor()
-    predictor.run_predictions()  # Run all models by default
-    # Or run specific models:
-    # predictor.run_predictions(['xgboost', 'lightgbm'])
+    try:
+        predictor = StockPredictor()
+        saved_models = predictor.run_predictions()  # Run all models by default
+        logger.info(f"Successfully completed predictions for models: {saved_models}")
+    except Exception as e:
+        logger.error(f"Script execution failed: {str(e)}")
