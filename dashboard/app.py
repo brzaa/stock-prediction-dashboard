@@ -15,31 +15,50 @@ st.set_page_config(
     layout="wide"
 )
 
-# Apply custom CSS to improve layout
+# Custom CSS to improve layout
 st.markdown("""
     <style>
-    .stRadio > div {
-        display: flex;
-        gap: 1rem;
-        flex-wrap: wrap;
+    .main > div {
+        padding-top: 2rem;
     }
-    .stRadio > div > label {
-        background: #2d2d2d;
-        padding: 0.5rem 1rem;
+    .stRadio [role=radiogroup] {
+        gap: 1rem;
+        flex-direction: row !important;
+    }
+    .stRadio label {
+        background: #1E1E1E;
+        padding: 1rem;
         border-radius: 0.5rem;
-        flex: 1;
+        min-width: 150px;
         text-align: center;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .sidebar .element-container {
+        margin-bottom: 1rem;
     }
     .metric-card {
-        background-color: #1f1f1f;
+        background: #1E1E1E;
         padding: 1rem;
         border-radius: 0.5rem;
         margin: 0.5rem 0;
     }
+    .st-emotion-cache-16idsys p {
+        font-size: 14px;
+        margin-bottom: 0px;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2rem;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding-right: 4px;
+        padding-left: 4px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-# Constants and Configuration
+# Constants
 MODEL_TYPES = {
     "XGBoost": "xgboost",
     "LSTM": "lstm",
@@ -68,7 +87,7 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
             
         bucket = client.bucket(bucket_name)
         
-        # Updated paths to match bucket structure
+        # Check all possible model paths
         paths = [
             f'models/{MODEL_TYPES[model_type].lower()}/{run_id}/results.json'
             for model_type in MODEL_TYPES
@@ -76,7 +95,8 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
         paths.extend([
             f'models/lstm_optimized/{run_id}/results.json',
             f'models/lstm_advanced/{run_id}/results.json',
-            f'models/lstm_default/{run_id}/results.json'
+            f'models/lstm_default/{run_id}/results.json',
+            f'model_outputs/{run_id}/results.json'  # Legacy path
         ])
         
         for path in paths:
@@ -102,7 +122,7 @@ def get_latest_predictions(model_type: str) -> dict:
         internal_model_type = MODEL_TYPES.get(model_type, model_type.lower())
         bucket = client.bucket("mlops-brza")
         
-        # Check both standard and variant paths
+        # Check multiple possible paths
         paths = [
             f'live_predictions/{internal_model_type}/latest.json',
             f'live_predictions/{internal_model_type}_optimized/latest.json',
@@ -122,7 +142,7 @@ def get_latest_predictions(model_type: str) -> dict:
         return None
 
 def load_all_models_results(bucket_name: str) -> list:
-    """Load results from all models for comparison"""
+    """Load all model results for comparison"""
     try:
         client = get_gcs_client()
         if not client:
@@ -131,19 +151,20 @@ def load_all_models_results(bucket_name: str) -> list:
         bucket = client.bucket(bucket_name)
         all_results = []
         
-        # Search in model directories
+        # Search in both models and model_outputs directories
         for prefix in ['models/', 'model_outputs/']:
             for blob in bucket.list_blobs(prefix=prefix):
                 if blob.name.endswith('results.json'):
                     try:
                         results = json.loads(blob.download_as_string())
-                        # Add model type if not present
-                        if 'model_type' not in results:
-                            for model_type in MODEL_TYPES.values():
-                                if model_type in blob.name:
-                                    results['model_type'] = model_type
-                                    break
-                        all_results.append(results)
+                        if 'metrics' in results:  # Only include valid results
+                            # Add model type if not present
+                            if 'model_type' not in results:
+                                for model_type in MODEL_TYPES.values():
+                                    if model_type in blob.name:
+                                        results['model_type'] = model_type
+                                        break
+                            all_results.append(results)
                     except Exception as e:
                         st.warning(f"Skipping malformed result file: {blob.name}")
                         continue
@@ -154,51 +175,78 @@ def load_all_models_results(bucket_name: str) -> list:
         return []
 
 def plot_predictions(results):
-    """Plot predictions vs actual values with improved date handling"""
+    """Plot predictions vs actual values with improved visualization"""
     if not results or 'predictions' not in results or 'actual_values' not in results:
         st.error("Invalid results format for plotting")
         return
-        
-    fig = go.Figure()
-    
-    # Convert numeric timestamps to datetime if available
+
+    # Convert dates to proper format
     dates = []
     if 'dates' in results:
-        dates = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else 
-                datetime.fromtimestamp(d) if isinstance(d, (int, float)) else d 
-                for d in results['dates']]
+        dates = pd.to_datetime(results['dates'])
     else:
         # Generate monthly dates if not available
-        start_date = datetime.now().replace(day=1)
-        dates = [start_date.replace(month=((start_date.month - i - 1) % 12 + 1))
-                for i in range(len(results['actual_values']))]
-    
+        dates = pd.date_range(
+            end=pd.Timestamp.now(),
+            periods=len(results['actual_values']),
+            freq='M'
+        )
+
+    # Create DataFrame for better handling
+    df = pd.DataFrame({
+        'Date': dates,
+        'Actual': results['actual_values'],
+        'Predicted': results['predictions']
+    })
+
+    fig = go.Figure()
+
+    # Add traces with improved styling
     fig.add_trace(go.Scatter(
-        x=dates,
-        y=results['actual_values'],
+        x=df['Date'],
+        y=df['Actual'],
         name="Actual",
-        line=dict(color="#2E86C1", width=2)
+        line=dict(color="#2E86C1", width=2, dash='solid'),
+        mode='lines'
     ))
-    
+
     fig.add_trace(go.Scatter(
-        x=dates,
-        y=results['predictions'],
+        x=df['Date'],
+        y=df['Predicted'],
         name="Predicted",
-        line=dict(color="#E74C3C", width=2)
+        line=dict(color="#E74C3C", width=2, dash='solid'),
+        mode='lines'
     ))
-    
+
+    # Improve layout
     fig.update_layout(
         title="Stock Price Predictions vs Actual Values",
         xaxis_title="Date",
         yaxis_title="Price",
         template="plotly_dark",
         height=500,
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01,
+            bgcolor="rgba(0,0,0,0.5)"
+        ),
         xaxis=dict(
             tickformat="%b %Y",
-            tickangle=45
-        )
+            tickangle=45,
+            gridcolor="rgba(255, 255, 255, 0.1)",
+            showgrid=True
+        ),
+        yaxis=dict(
+            gridcolor="rgba(255, 255, 255, 0.1)",
+            showgrid=True
+        ),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)"
     )
-    
+
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_feature_importance(results):
@@ -221,88 +269,14 @@ def plot_feature_importance(results):
         template="plotly_dark"
     )
     
-    fig.update_layout(height=400)
-    st.plotly_chart(fig, use_container_width=True)
-
-def plot_model_comparison(all_results):
-    """Create comparison plots for model metrics"""
-    if not all_results:
-        st.warning("No results available for comparison")
-        return
-        
-    comparison_data = []
-    for result in all_results:
-        if 'metrics' in result and 'model_type' in result:
-            comparison_data.append({
-                'Model Type': result.get('model_type', 'Unknown').title(),
-                'Run ID': result.get('run_id', 'N/A'),
-                'Timestamp': result.get('timestamp', 'N/A'),
-                'MSE': result['metrics']['mse'],
-                'RMSE': result['metrics']['rmse'],
-                'R²': result['metrics']['r2'],
-                'MAE': result['metrics']['mae']
-            })
-    
-    if not comparison_data:
-        st.warning("No valid comparison data available")
-        return
-        
-    df = pd.DataFrame(comparison_data)
-    
-    # Create comparison plots
-    metrics = ['MSE', 'RMSE', 'R²', 'MAE']
-    
-    # Use columns for metrics
-    cols = st.columns(2)
-    for i, metric in enumerate(metrics):
-        with cols[i % 2]:
-            fig = px.bar(
-                df,
-                x='Model Type',
-                y=metric,
-                title=f'{metric} Comparison',
-                color='Model Type',
-                template="plotly_dark",
-                hover_data=['Run ID', 'Timestamp']
-            )
-            fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
-    
-    # Display best models
-    st.subheader("Best Models by Metric")
-    cols = st.columns(4)
-    
-    for col, metric in zip(cols, metrics):
-        with col:
-            st.markdown(f"<div class='metric-card'>", unsafe_allow_html=True)
-            if metric == 'R²':
-                best = df.loc[df[metric].idxmax()]
-                st.metric(
-                    f"Best {metric}",
-                    f"{best['Model Type']}",
-                    f"{best[metric]:.4f}"
-                )
-            else:
-                best = df.loc[df[metric].idxmin()]
-                st.metric(
-                    f"Best {metric}",
-                    f"{best['Model Type']}",
-                    f"{best[metric]:.4f}"
-                )
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    # Detailed comparison table
-    st.subheader("Detailed Model Comparison")
-    st.dataframe(
-        df.style.highlight_min(['MSE', 'RMSE', 'MAE'])
-            .highlight_max(['R²'])
-            .format({
-                'MSE': '{:.6f}',
-                'RMSE': '{:.6f}',
-                'R²': '{:.6f}',
-                'MAE': '{:.6f}'
-            })
+    fig.update_layout(
+        height=400,
+        showlegend=False,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)"
     )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
 def display_metrics(metrics):
     """Display model performance metrics in columns"""
@@ -323,6 +297,97 @@ def display_metrics(metrics):
                 help=description
             )
             st.markdown("</div>", unsafe_allow_html=True)
+
+def display_model_comparison():
+    """Display model comparison dashboard"""
+    st.header("Model Performance Comparison")
+    
+    all_results = load_all_models_results("mlops-brza")
+    if not all_results:
+        st.warning("No model results available for comparison")
+        return
+        
+    # Create comparison dataframe
+    comparison_data = []
+    for result in all_results:
+        if 'metrics' in result and 'model_type' in result:
+            comparison_data.append({
+                'Model Type': result['model_type'].replace('_', ' ').title(),
+                'Run ID': result.get('run_id', 'N/A'),
+                'Timestamp': result.get('timestamp', 'N/A'),
+                'MSE': result['metrics']['mse'],
+                'RMSE': result['metrics']['rmse'],
+                'R²': result['metrics']['r2'],
+                'MAE': result['metrics']['mae']
+            })
+    
+    df = pd.DataFrame(comparison_data)
+    
+    # Display key metrics in columns
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        best_mse = df.loc[df['MSE'].idxmin()]
+        st.metric("Best MSE", 
+                 best_mse['Model Type'],
+                 f"{best_mse['MSE']:.4f}")
+    
+    with col2:
+        best_rmse = df.loc[df['RMSE'].idxmin()]
+        st.metric("Best RMSE",
+                 best_rmse['Model Type'],
+                 f"{best_rmse['RMSE']:.4f}")
+    
+    with col3:
+        best_r2 = df.loc[df['R²'].idxmax()]
+        st.metric("Best R²",
+                 best_r2['Model Type'],
+                 f"{best_r2['R²']:.4f}")
+    
+    with col4:
+        best_mae = df.loc[df['MAE'].idxmin()]
+        st.metric("Best MAE",
+                 best_mae['Model Type'],
+                 f"{best_mae['MAE']:.4f}")
+    
+    # Plot comparisons
+    st.subheader("Metric Comparison Across Models")
+    
+    tab1, tab2 = st.tabs(["📊 Charts", "📑 Details"])
+    
+    with tab1:
+        metrics = ['MSE', 'RMSE', 'R²', 'MAE']
+        for metric in metrics:
+            fig = px.bar(
+                df,
+                x='Model Type',
+                y=metric,
+                title=f'{metric} by Model',
+                color='Model Type',
+                template="plotly_dark"
+            )
+            fig.update_layout(
+                showlegend=False,
+                height=400,
+                xaxis_tickangle=45,
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with tab2:
+        # Detailed table
+        st.dataframe(
+            df.style.highlight_min(['MSE', 'RMSE', 'MAE'])
+                .highlight_max(['R²'])
+                .format({
+                    'MSE': '{:.6f}',
+                    'RMSE': '{:.6f}',
+                    'R²': '{:.6f}',
+                    'MAE': '{:.6f}'
+                }),
+            use_container_width=True
+        )
 
 def display_live_predictions(model_type):
     """Display live predictions for a specific model"""
@@ -371,7 +436,10 @@ def display_prediction_results(results):
 def display_historical_results(results):
     """Display historical analysis results"""
     st.subheader(f"Model Type: {results.get('model_type', 'Unknown').title()}")
-    st.text(f"Training Time: {results.get('timestamp', 'Unknown')}")
+    timestamp = results.get('timestamp', 'Unknown')
+    if timestamp != 'Unknown':
+        timestamp = pd.to_datetime(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    st.text(f"Training Time: {timestamp}")
     
     if 'metrics' in results:
         st.header("Model Performance Metrics")
@@ -387,52 +455,55 @@ def display_historical_results(results):
     
     col1, col2 = st.columns(2)
     with col1:
-        with st.expander("Model Parameters"):
+        with st.expander("Model Parameters", expanded=True):
             st.json(results.get('parameters', {}))
     
     with col2:
-        with st.expander("Training Details"):
+        with st.expander("Training Details", expanded=True):
             st.text(f"Run ID: {results.get('run_id', 'Unknown')}")
-            st.text(f"Training Time: {results.get('timestamp', 'Unknown')}")
+            st.text(f"Training Time: {timestamp}")
             if 'training_time' in results:
                 st.text(f"Training Duration: {results['training_time']:.2f}s")
 
 def main():
     st.title("📈 Stock Price Prediction Dashboard")
-    
-    # Use columns for better layout
-    col1, col2 = st.columns([1, 3])
+
+    # Create three columns for controls
+    col1, col2, col3 = st.columns([1, 1, 1])
     
     with col1:
-        st.subheader("Dashboard Controls")
         model_type = st.selectbox(
             "Select Model",
             list(MODEL_TYPES.keys()),
             key="model_select"
         )
-        
+    
+    with col2:
         analysis_type = st.radio(
             "Analysis Type",
             ["Historical Analysis", "Live Predictions", "Model Comparison"],
             horizontal=True
         )
-        
-        if analysis_type == "Historical Analysis":
+    
+    if analysis_type == "Historical Analysis":
+        with col3:
             run_id = st.text_input(
                 "Enter Run ID",
                 help="Enter the model run ID to view historical results"
             )
     
-    with col2:
-        if analysis_type == "Live Predictions":
-            display_live_predictions(model_type)
-        elif analysis_type == "Model Comparison":
-            display_model_comparison()
-        else:
-            if run_id:
-                results = load_model_results("mlops-brza", run_id)
-                if results:
-                    display_historical_results(results)
+    # Main content area
+    st.markdown("---")  # Add a divider
+    
+    if analysis_type == "Live Predictions":
+        display_live_predictions(model_type)
+    elif analysis_type == "Model Comparison":
+        display_model_comparison()
+    else:
+        if run_id:
+            results = load_model_results("mlops-brza", run_id)
+            if results:
+                display_historical_results(results)
 
 if __name__ == "__main__":
     main()
