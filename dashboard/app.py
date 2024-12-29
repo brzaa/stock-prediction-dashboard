@@ -15,9 +15,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# Constants
-AVAILABLE_MODELS = ["XGBoost", "LSTM", "Decision Tree", "LightGBM"]
-MODEL_TYPE_MAPPING = {
+# Constants and Configuration
+MODEL_TYPES = {
     "XGBoost": "xgboost",
     "LSTM": "lstm",
     "Decision Tree": "decision_tree",
@@ -48,10 +47,8 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
         # Define all possible paths for model results
         paths = [
             f'model_outputs/{run_id}/results.json',
-            f'model_outputs/lightgbm/{run_id}/results.json',
-            f'model_outputs/lstm/{run_id}/results.json',
-            f'model_outputs/decision_tree/{run_id}/results.json',
-            f'model_outputs/xgboost/{run_id}/results.json'
+            *[f'model_outputs/{model_type}/{run_id}/results.json' 
+              for model_type in MODEL_TYPES.values()]
         ]
         
         for path in paths:
@@ -67,6 +64,31 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
         st.error(f"Error loading results: {str(e)}")
         return None
 
+def get_latest_predictions(model_type: str) -> dict:
+    """Fetch latest predictions for a specific model"""
+    try:
+        client = get_gcs_client()
+        if not client:
+            return None
+            
+        # Convert display name to internal name
+        internal_model_type = MODEL_TYPES.get(model_type, model_type.lower())
+        
+        bucket = client.bucket("mlops-brza")
+        blob_path = f'live_predictions/{internal_model_type}/latest.json'
+        blob = bucket.blob(blob_path)
+        
+        st.info(f"Checking for predictions at: {blob_path}")  # Debug info
+        
+        if not blob.exists():
+            st.warning(f"No predictions found at path: {blob_path}")
+            return None
+            
+        return json.loads(blob.download_as_string())
+    except Exception as e:
+        st.error(f"Error fetching predictions: {str(e)}")
+        return None
+
 def load_all_models_results(bucket_name: str) -> list:
     """Load results from all models for comparison"""
     try:
@@ -76,7 +98,6 @@ def load_all_models_results(bucket_name: str) -> list:
             
         bucket = client.bucket(bucket_name)
         all_results = []
-        model_types = ['xgboost', 'lstm', 'decision_tree', 'lightgbm']
         
         # Search in all possible paths
         for blob in bucket.list_blobs(prefix='model_outputs/'):
@@ -85,7 +106,7 @@ def load_all_models_results(bucket_name: str) -> list:
                     results = json.loads(blob.download_as_string())
                     # Add model type if not present
                     if 'model_type' not in results:
-                        for model_type in model_types:
+                        for model_type in MODEL_TYPES.values():
                             if model_type in blob.name:
                                 results['model_type'] = model_type
                                 break
@@ -98,25 +119,6 @@ def load_all_models_results(bucket_name: str) -> list:
     except Exception as e:
         st.error(f"Error loading results: {str(e)}")
         return []
-
-def get_latest_predictions(model_type: str) -> dict:
-    """Fetch latest predictions for a specific model"""
-    try:
-        client = get_gcs_client()
-        if not client:
-            return None
-            
-        bucket = client.bucket("mlops-brza")
-        blob = bucket.blob(f'live_predictions/{model_type}/latest.json')
-        
-        if not blob.exists():
-            st.warning(f"No predictions found for {model_type}")
-            return None
-            
-        return json.loads(blob.download_as_string())
-    except Exception as e:
-        st.error(f"Error fetching predictions: {str(e)}")
-        return None
 
 def plot_predictions(results):
     """Plot predictions vs actual values"""
@@ -251,104 +253,118 @@ def display_metrics(metrics):
     with col4:
         st.metric("MAE", f"{metrics['mae']:.2f}")
 
+def display_live_predictions(model_type):
+    """Display live predictions for a specific model"""
+    st.header("🔴 Live Stock Price Predictions")
+    
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("🔄 Refresh Predictions"):
+            st.experimental_rerun()
+        
+        auto_refresh = st.checkbox("Auto-refresh (30s)", value=False)
+        if auto_refresh:
+            st.empty()
+            time.sleep(30)
+            st.experimental_rerun()
+    
+    results = get_latest_predictions(model_type)
+    
+    if results:
+        st.success(f"Last Updated: {results['timestamp']}")
+        display_prediction_results(results)
+    else:
+        st.warning(f"No predictions available for {model_type}.")
+        st.info("Please check if the live prediction service is running and the model type is configured correctly.")
+
+def display_historical_analysis(model_type):
+    """Display historical analysis for a specific model"""
+    st.header("📊 Historical Analysis")
+    run_id = st.sidebar.text_input("Enter Run ID")
+    
+    if run_id:
+        results = load_model_results("mlops-brza", run_id)
+        if results:
+            display_historical_results(results)
+        else:
+            st.warning("No historical results found for this Run ID.")
+
+def display_prediction_results(results):
+    """Display prediction results including metrics and plots"""
+    st.subheader("Model Performance Metrics")
+    display_metrics(results['metrics'])
+    
+    st.subheader("Predictions vs Actual Values")
+    plot_predictions(results)
+    
+    # Show model parameters in expander
+    with st.expander("Model Parameters"):
+        st.json(results.get('parameters', {}))
+    
+    # Add download button for predictions
+    st.sidebar.download_button(
+        label="Download Predictions",
+        data=json.dumps(results, indent=2),
+        file_name=f"{results.get('model_type', 'predictions')}.json",
+        mime="application/json"
+    )
+
+def display_historical_results(results):
+    """Display historical analysis results"""
+    st.subheader(f"Model Type: {results.get('model_type', 'Unknown').title()}")
+    st.text(f"Training Time: {results.get('timestamp', 'Unknown')}")
+    
+    st.header("Model Performance Metrics")
+    display_metrics(results['metrics'])
+    
+    st.header("Model Predictions")
+    plot_predictions(results)
+    
+    # Show feature importance for tree-based models
+    if results.get('model_type') in ['xgboost', 'lightgbm', 'decision_tree']:
+        st.header("Feature Importance")
+        plot_feature_importance(results)
+    
+    with st.expander("Model Parameters"):
+        st.json(results.get('parameters', {}))
+    
+    with st.expander("Training Details"):
+        st.text(f"Run ID: {results.get('run_id', 'Unknown')}")
+        st.text(f"Training Time: {results.get('timestamp', 'Unknown')}")
+
+def display_model_comparison():
+    """Display model comparison view"""
+    st.header("Model Performance Comparison")
+    all_results = load_all_models_results("mlops-brza")
+    if all_results:
+        plot_model_comparison(all_results)
+    else:
+        st.warning("No results found for comparison.")
+
 def main():
     st.title("📈 Stock Price Prediction Dashboard")
     
     st.sidebar.title("Dashboard Controls")
     
-    view_type = st.sidebar.radio(
-        "Select View",
-        ["Individual Model Analysis", "Model Comparison", "Live Predictions"]
+    # Move model selection to top of sidebar
+    model_type = st.sidebar.selectbox(
+        "Select Model",
+        list(MODEL_TYPES.keys()),
+        key="model_select"
     )
     
-    if view_type == "Live Predictions":
-        st.header("🔴 Live Stock Price Predictions")
-        
-        model_type = st.sidebar.selectbox(
-            "Select Model",
-            AVAILABLE_MODELS,
-            key="live_model_select"
-        )
-        
-        # Convert display name to internal name
-        internal_model_type = MODEL_TYPE_MAPPING[model_type]
-        
-        auto_refresh = st.sidebar.checkbox("Auto-refresh (30s)", value=False)
-        if auto_refresh:
-            st.empty()
-            time.sleep(30)
-            st.experimental_rerun()
-        
-        if st.button("🔄 Refresh Predictions"):
-            st.experimental_rerun()
-        
-        results = get_latest_predictions(internal_model_type)
-        
-        if results:
-            st.success(f"Last Updated: {results['timestamp']}")
-            
-            st.subheader("Model Performance Metrics")
-            display_metrics(results['metrics'])
-            
-            st.subheader("Predictions vs Actual Values")
-            plot_predictions(results)
-            
-            with st.expander("Model Parameters"):
-                st.json(results.get('parameters', {}))
-            
-            # Add download button for predictions
-            st.sidebar.download_button(
-                label="Download Predictions",
-                data=json.dumps(results, indent=2),
-                file_name=f"{internal_model_type}_predictions.json",
-                mime="application/json"
-            )
-        else:
-            st.warning("No predictions available.")
-            st.info("Check if the live prediction service is running.")
+    # Add analysis type selection
+    analysis_type = st.sidebar.radio(
+        "Analysis Type",
+        ["Historical Analysis", "Live Predictions", "Model Comparison"]
+    )
     
-    elif view_type == "Model Comparison":
-        st.header("Model Performance Comparison")
-        all_results = load_all_models_results("mlops-brza")
-        if all_results:
-            plot_model_comparison(all_results)
-        else:
-            st.warning("No results found for comparison.")
-    
-    else:  # Individual Model Analysis
-        model_type = st.sidebar.selectbox(
-            "Select Model Type",
-            AVAILABLE_MODELS
-        )
-        
-        run_id = st.sidebar.text_input("Enter Run ID")
-        
-        if run_id:
-            results = load_model_results("mlops-brza", run_id)
-            
-            if results:
-                st.subheader(f"Model Type: {results.get('model_type', 'Unknown').title()}")
-                st.text(f"Training Time: {results.get('timestamp', 'Unknown')}")
-                
-                st.header("Model Performance Metrics")
-                display_metrics(results['metrics'])
-                
-                st.header("Model Predictions")
-                plot_predictions(results)
-                
-                # Show feature importance for tree-based models
-                if results.get('model_type') in ['xgboost', 'lightgbm', 'decision_tree']:
-                    st.header("Feature Importance")
-                    plot_feature_importance(results)
-                
-                with st.expander("Model Parameters"):
-                    st.json(results.get('parameters', {}))
-                
-                with st.expander("Training Details"):
-                    st.text(f"Run ID: {run_id}")
-                    st.text(f"Training Time: {results['timestamp']}")
-            else:
-                st.warning("Run ID not found or invalid.")
+    if analysis_type == "Live Predictions":
+        display_live_predictions(model_type)
+    elif analysis_type == "Model Comparison":
+        display_model_comparison()
+    else:
+        display_historical_analysis(model_type)
 
 if __name__ == "__main__":
     main()
