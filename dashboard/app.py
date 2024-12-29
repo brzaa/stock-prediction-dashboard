@@ -217,9 +217,23 @@ def main():
             time.sleep(30)
             st.rerun()
         
-        # Manual refresh button
+        # In the Live Predictions section of main():
         if st.button("🔄 Refresh Predictions"):
-            st.rerun()
+            with st.spinner("Fetching new predictions..."):
+                try:
+                    # Clear any existing messages
+                    st.empty()
+                    
+                    # Get predictions
+                    results = get_latest_predictions(model_type.lower())
+                    
+                    if results:
+                        st.success("Successfully fetched new predictions!")
+                    else:
+                        st.error("No predictions available")
+                        st.info("Please make sure the prediction service is running")
+                except Exception as e:
+                    st.error(f"Error refreshing predictions: {str(e)}")
             
         # Get latest predictions
         with st.spinner("Fetching latest predictions..."):
