@@ -1,3 +1,4 @@
+
 # live_prediction_service.py
 import os
 import pandas as pd
@@ -17,6 +18,7 @@ from sklearn.tree import DecisionTreeRegressor
 import yfinance as yf
 import json
 
+# Logging configuration
 logging.basicConfig(
     filename='live_predictions.log',
     level=logging.INFO,
@@ -40,34 +42,33 @@ class StockPredictor:
         """Fetch stock data from Yahoo Finance"""
         try:
             end_date = datetime.now().strftime('%Y-%m-%d')
-            data = yf.download('MASB.JK', start='2015-01-01', end=end_date)
+            logger.info("Fetching stock data from Yahoo Finance.")
+            data = yf.download('MASB.JK', start='2015-01-01', end=end_date, progress=False)
+            
+            if data.empty:
+                raise ValueError("No stock data fetched. Please check the ticker symbol or network.")
             
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = ['_'.join(col).strip() for col in data.columns.values]
             data.columns = data.columns.str.lower()
             
+            logger.info("Stock data fetched successfully.")
             return data
         except Exception as e:
-            logger.error(f"Error fetching data: {str(e)}")
+            logger.error(f"Error fetching stock data: {str(e)}")
             raise
 
     def calculate_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Calculate technical indicators"""
         df = data.copy()
-        
-        # Price-based features
         df['returns'] = df['close'].pct_change()
         df['log_returns'] = np.log1p(df['returns'])
         
-        # Moving averages
         for window in [5, 10, 20]:
             df[f'ma_{window}'] = df['close'].rolling(window=window).mean()
             df[f'std_{window}'] = df['close'].rolling(window=window).std()
         
-        # Price momentum
         df['momentum'] = df['close'] - df['close'].shift(5)
-        
-        # Volume features
         df['volume_ma_5'] = df['volume'].rolling(window=5).mean()
         df['volume_ratio'] = df['volume'] / df['volume_ma_5']
         
@@ -75,32 +76,24 @@ class StockPredictor:
 
     def prepare_data(self, data: pd.DataFrame):
         """Prepare data for training"""
-        # Calculate features
         data = self.calculate_features(data)
         data = data.dropna()
         
-        # Define features
-        feature_cols = [col for col in data.columns 
-                       if col not in ['close'] and not pd.isna(data[col]).any()]
-        
-        # Split data
+        feature_cols = [col for col in data.columns if col not in ['close']]
         train_size = int(len(data) * 0.8)
         train_data = data[:train_size]
         test_data = data[train_size:]
         
-        # Prepare features and target
         X_train = train_data[feature_cols]
         y_train = train_data['close']
         X_test = test_data[feature_cols]
         y_test = test_data['close']
         
-        # Scale features
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         
-        return (X_train_scaled, X_test_scaled, y_train, y_test, 
-                test_data.index, feature_cols)
+        return (X_train_scaled, X_test_scaled, y_train, y_test, test_data.index, feature_cols)
 
     def train_xgboost(self, X_train, y_train):
         params = {
@@ -153,25 +146,16 @@ class StockPredictor:
     def run_predictions(self):
         """Run predictions for all models"""
         try:
-            # Fetch and prepare data
             data = self.fetch_stock_data()
             X_train, X_test, y_train, y_test, test_dates, feature_cols = self.prepare_data(data)
             
-            # Check for drift
             drift_detected, drifted_features = self.detect_drift(X_train, X_test)
             
-            # Run predictions for each model
             for model_type, train_func in self.models.items():
                 try:
-                    logger.info(f"Running predictions for {model_type}")
-                    
-                    # Train model
                     model, params = train_func(X_train, y_train)
-                    
-                    # Make predictions
                     predictions = model.predict(X_test)
                     
-                    # Calculate metrics
                     metrics = {
                         'mse': float(mean_squared_error(y_test, predictions)),
                         'rmse': float(np.sqrt(mean_squared_error(y_test, predictions))),
@@ -179,9 +163,8 @@ class StockPredictor:
                         'mae': float(mean_absolute_error(y_test, predictions))
                     }
                     
-                    # Prepare results
                     results = {
-                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'timestamp': datetime.now().isoformat(),
                         'model_type': model_type,
                         'predictions': predictions.tolist(),
                         'actual_values': y_test.tolist(),
@@ -193,12 +176,9 @@ class StockPredictor:
                         'feature_names': feature_cols
                     }
                     
-                    # Save to GCS
                     blob = self.bucket.blob(f'live_predictions/{model_type}/latest.json')
                     blob.upload_from_string(json.dumps(results), content_type='application/json')
-                    
                     logger.info(f"Successfully saved predictions for {model_type}")
-                    
                 except Exception as e:
                     logger.error(f"Error in {model_type} predictions: {str(e)}")
                     
@@ -208,19 +188,18 @@ class StockPredictor:
 if __name__ == "__main__":
     predictor = StockPredictor()
     
-    # Schedule predictions
     def job():
-        logger.info("Starting scheduled prediction run")
+        logger.info("Starting prediction run")
         predictor.run_predictions()
-        logger.info("Completed scheduled prediction run")
+        logger.info("Prediction run completed")
     
-    # Run immediately
-    job()
+    job()  # Run immediately
     
-    # Schedule to run every hour
     schedule.every(1).hours.do(job)
-    
-    # Keep the script running
     while True:
-        schedule.run_pending()
-        time.sleep(60)
+        try:
+            schedule.run_pending()
+            time.sleep(60)
+        except KeyboardInterrupt:
+            logger.info("Service stopped manually")
+            break
