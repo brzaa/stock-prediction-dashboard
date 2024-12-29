@@ -198,6 +198,8 @@ def main():
         ["Individual Model Analysis", "Model Comparison", "Live Predictions"]
     )
     
+# In the main() function, replace the Live Predictions section with:
+
     if view_type == "Live Predictions":
         st.header("🔴 Live Stock Price Predictions")
         
@@ -211,19 +213,21 @@ def main():
         # Auto-refresh option
         auto_refresh = st.sidebar.checkbox("Auto-refresh (30s)", value=False)
         if auto_refresh:
+            st.empty()
             time.sleep(30)
-            st.experimental_rerun()
+            st.rerun()
         
         # Manual refresh button
         if st.button("🔄 Refresh Predictions"):
-            st.experimental_rerun()
+            st.rerun()
             
         # Get latest predictions
-        results = get_latest_predictions(model_type.lower())
+        with st.spinner("Fetching latest predictions..."):
+            results = get_latest_predictions(model_type.lower())
         
         if results:
             # Show last update time
-            st.info(f"Last Updated: {results['timestamp']}")
+            st.success(f"Last Updated: {results['timestamp']}")
             
             # Display metrics
             st.subheader("Model Performance Metrics")
@@ -239,24 +243,38 @@ def main():
                 st.metric("MAE", f"{metrics['mae']:.2f}")
             
             # Plot predictions
+            st.subheader("Predictions vs Actual Values")
             plot_predictions(results)
             
-            # Show drift detection results
-            st.subheader("Data Drift Analysis")
-            if results['drift_detected']:
-                st.warning("🚨 Data drift detected!")
-                st.write("Drifted Features:")
-                for feature in results['drifted_features']:
-                    st.write(f"- {feature['feature_idx']}: p-value = {feature['p_value']:.4f}")
-            else:
-                st.success("✅ No data drift detected")
+            # Show drift detection results if available
+            if 'drift_detected' in results:
+                st.subheader("Data Drift Analysis")
+                if results['drift_detected']:
+                    st.warning("🚨 Data drift detected!")
+                    if 'drifted_features' in results:
+                        st.write("Drifted Features:")
+                        for feature in results['drifted_features']:
+                            feature_idx = feature.get('feature_idx', 'Unknown')
+                            p_value = feature.get('p_value', 0)
+                            st.write(f"- Feature {feature_idx}: p-value = {p_value:.4f}")
+                else:
+                    st.success("✅ No data drift detected")
             
             # Model parameters
             with st.expander("Model Parameters"):
                 st.json(results['parameters'])
+                
+            # Download predictions
+            st.sidebar.download_button(
+                label="Download Latest Predictions",
+                data=json.dumps(results, indent=2),
+                file_name=f"live_{model_type.lower()}_predictions.json",
+                mime="application/json"
+            )
         else:
             st.warning("No live predictions available. The prediction service might be offline.")
-    
+            st.info("Try clicking the Refresh button or check if the prediction service is running.")
+
     elif view_type == "Model Comparison":
         st.header("Model Performance Comparison")
         results = load_all_models_results("mlops-brza")
