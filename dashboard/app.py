@@ -14,8 +14,9 @@ st.set_page_config(page_title="Stock Price Prediction Dashboard", page_icon="ðŸ“
 # Custom CSS
 st.markdown("""
     <style>
+    .main > div {padding-top: 1rem;}
     .block-container {padding-top: 1rem;}
-    .st-bw {background-color: #262730;}
+    .element-container {margin-bottom: 1rem;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -27,10 +28,7 @@ MODEL_TYPES = {
     "LightGBM": "lightgbm"
 }
 
-# Initialize session state
-if 'current_page' not in st.session_state:
-    st.session_state.current_page = "Historical Analysis"
-
+# Cache GCS client
 @st.cache_resource
 def get_gcs_client():
     try:
@@ -47,10 +45,8 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
         client = get_gcs_client()
         if not client:
             return None
-            
-        bucket = client.bucket(bucket_name)
         
-        # Check both model_outputs and models directories
+        bucket = client.bucket(bucket_name)
         paths = [
             f'model_outputs/{run_id}/results.json',
             f'models/lstm_optimized/{run_id}/results.json',
@@ -73,6 +69,35 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
     except Exception as e:
         st.error(f"Error loading results: {str(e)}")
         return None
+
+def load_all_models_results(bucket_name: str) -> list:
+    try:
+        client = get_gcs_client()
+        if not client:
+            return []
+            
+        bucket = client.bucket(bucket_name)
+        all_results = []
+        
+        # Search in models directory
+        for blob in bucket.list_blobs(prefix='models/'):
+            if blob.name.endswith('results.json'):
+                try:
+                    results = json.loads(blob.download_as_string())
+                    if 'metrics' in results:
+                        if 'model_type' not in results:
+                            for model_type in MODEL_TYPES.values():
+                                if model_type in blob.name:
+                                    results['model_type'] = model_type
+                                    break
+                        all_results.append(results)
+                except:
+                    continue
+                    
+        return all_results
+    except Exception as e:
+        st.error(f"Error loading results: {str(e)}")
+        return []
 
 def get_latest_predictions(model_type: str) -> dict:
     try:
@@ -109,7 +134,11 @@ def plot_predictions(results):
     if 'dates' in results:
         dates = pd.to_datetime(results['dates'])
     else:
-        dates = pd.date_range(end=pd.Timestamp.now(), periods=len(results['actual_values']), freq='M')
+        dates = pd.date_range(
+            end=pd.Timestamp.now(),
+            periods=len(results['actual_values']),
+            freq='M'
+        )
 
     df = pd.DataFrame({
         'Date': dates,
@@ -210,33 +239,13 @@ def display_model_comparison():
             })
     )
 
-def load_all_models_results(bucket_name: str) -> list:
-    try:
-        client = get_gcs_client()
-        if not client:
-            return []
-            
-        bucket = client.bucket(bucket_name)
-        all_results = []
-        
-        for blob in bucket.list_blobs(prefix='models/'):
-            if blob.name.endswith('results.json'):
-                try:
-                    results = json.loads(blob.download_as_string())
-                    if 'metrics' in results:
-                        if 'model_type' not in results:
-                            for model_type in MODEL_TYPES.values():
-                                if model_type in blob.name:
-                                    results['model_type'] = model_type
-                                    break
-                        all_results.append(results)
-                except:
-                    continue
-                    
-        return all_results
-    except Exception as e:
-        st.error(f"Error loading results: {str(e)}")
-        return []
+def display_historical_results(results):
+    if 'metrics' in results:
+        st.subheader("Model Metrics")
+        display_metrics(results['metrics'])
+    
+    st.subheader("Price Predictions")
+    plot_predictions(results)
 
 def main():
     st.title("ðŸ“ˆ Stock Price Prediction Dashboard")
@@ -244,45 +253,30 @@ def main():
     # Sidebar navigation
     with st.sidebar:
         st.header("Navigation")
+        # Select Model dropdown
         model_type = st.selectbox("Select Model", list(MODEL_TYPES.keys()))
-        
-        selected_page = st.radio(
-            "Select Analysis Type",
-            ["Historical Analysis", "Live Predictions", "Model Comparison"]
-        )
-        
-        st.session_state.current_page = selected_page
-        
-        if selected_page == "Historical Analysis":
-            run_id = st.text_input("Enter Run ID")
 
+        # Analysis Type radio buttons (in the same order as you requested)
+        pages = ["Model Comparison", "Historical Analysis", "Live Predictions"]
+        current_page = st.radio("Select Analysis Type", pages)
+        
+        # Run ID input (only show for Historical Analysis)
+        if current_page == "Historical Analysis":
+            run_id = st.text_input("Enter Run ID")
+    
     # Main content area
-    if st.session_state.current_page == "Historical Analysis":
-        if run_id:
+    if current_page == "Model Comparison":
+        display_model_comparison()
+    elif current_page == "Historical Analysis":
+        if 'run_id' in locals():
             results = load_model_results("mlops-brza", run_id)
             if results:
-                st.subheader(f"Model Type: {results.get('model_type', 'Unknown').title()}")
-                
-                if 'metrics' in results:
-                    st.subheader("Model Metrics")
-                    display_metrics(results['metrics'])
-                
-                st.subheader("Price Predictions")
-                plot_predictions(results)
-
-    elif st.session_state.current_page == "Live Predictions":
-        latest_results = get_latest_predictions(model_type)
-        if latest_results:
-            st.success(f"Last Updated: {latest_results.get('timestamp', 'Unknown')}")
-            if 'metrics' in latest_results:
-                st.subheader("Current Model Metrics")
-                display_metrics(latest_results['metrics'])
-            plot_predictions(latest_results)
-        else:
-            st.warning("No live predictions available")
-
-    elif st.session_state.current_page == "Model Comparison":
-        display_model_comparison()
+                display_historical_results(results)
+    elif current_page == "Live Predictions":
+        results = get_latest_predictions(model_type)
+        if results:
+            st.success(f"Last Updated: {results.get('timestamp', 'Unknown')}")
+            display_historical_results(results)
 
 if __name__ == "__main__":
     main()
