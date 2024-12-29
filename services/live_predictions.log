@@ -1,0 +1,6 @@
+2024-12-29 09:33:27,918 - __main__ - INFO - Starting scheduled prediction run
+2024-12-29 09:33:28,440 - __main__ - ERROR - Error in run_predictions: 'close'
+2024-12-29 09:33:28,440 - __main__ - INFO - Completed scheduled prediction run
+2024-12-29 09:35:12,099 - __main__ - INFO - Starting scheduled prediction run
+2024-12-29 09:35:12,430 - __main__ - ERROR - Error in run_predictions: 'close'
+2024-12-29 09:35:12,430 - __main__ - INFO - Completed scheduled prediction run
