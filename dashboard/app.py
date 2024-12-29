@@ -192,58 +192,34 @@ def main():
     
     st.sidebar.title("Dashboard Controls")
     
-    # Add view selection
     view_type = st.sidebar.radio(
         "Select View",
         ["Individual Model Analysis", "Model Comparison", "Live Predictions"]
     )
     
-# In the main() function, replace the Live Predictions section with:
-
     if view_type == "Live Predictions":
         st.header("🔴 Live Stock Price Predictions")
         
-        # Model selection for live predictions
         model_type = st.sidebar.selectbox(
             "Select Model",
             ["XGBoost", "Decision Tree", "LightGBM"],
             key="live_model_select"
         )
         
-        # Auto-refresh option
         auto_refresh = st.sidebar.checkbox("Auto-refresh (30s)", value=False)
         if auto_refresh:
             st.empty()
             time.sleep(30)
-            st.rerun()
+            st.experimental_rerun()
         
-        # In the Live Predictions section of main():
         if st.button("🔄 Refresh Predictions"):
-            with st.spinner("Fetching new predictions..."):
-                try:
-                    # Clear any existing messages
-                    st.empty()
-                    
-                    # Get predictions
-                    results = get_latest_predictions(model_type.lower())
-                    
-                    if results:
-                        st.success("Successfully fetched new predictions!")
-                    else:
-                        st.error("No predictions available")
-                        st.info("Please make sure the prediction service is running")
-                except Exception as e:
-                    st.error(f"Error refreshing predictions: {str(e)}")
-            
-        # Get latest predictions
-        with st.spinner("Fetching latest predictions..."):
-            results = get_latest_predictions(model_type.lower())
+            st.experimental_rerun()
+        
+        results = get_latest_predictions(model_type.lower())
         
         if results:
-            # Show last update time
             st.success(f"Last Updated: {results['timestamp']}")
             
-            # Display metrics
             st.subheader("Model Performance Metrics")
             metrics = results['metrics']
             col1, col2, col3, col4 = st.columns(4)
@@ -256,46 +232,29 @@ def main():
             with col4:
                 st.metric("MAE", f"{metrics['mae']:.2f}")
             
-            # Plot predictions
             st.subheader("Predictions vs Actual Values")
             plot_predictions(results)
             
-            # Show drift detection results if available
-            if 'drift_detected' in results:
-                st.subheader("Data Drift Analysis")
-                if results['drift_detected']:
-                    st.warning("🚨 Data drift detected!")
-                    if 'drifted_features' in results:
-                        st.write("Drifted Features:")
-                        for feature in results['drifted_features']:
-                            feature_idx = feature.get('feature_idx', 'Unknown')
-                            p_value = feature.get('p_value', 0)
-                            st.write(f"- Feature {feature_idx}: p-value = {p_value:.4f}")
-                else:
-                    st.success("✅ No data drift detected")
-            
-            # Model parameters
             with st.expander("Model Parameters"):
-                st.json(results['parameters'])
-                
-            # Download predictions
+                st.json(results.get('parameters', {}))  # Safely handle missing 'parameters'
+            
             st.sidebar.download_button(
-                label="Download Latest Predictions",
+                label="Download Predictions",
                 data=json.dumps(results, indent=2),
-                file_name=f"live_{model_type.lower()}_predictions.json",
+                file_name=f"{model_type.lower()}_predictions.json",
                 mime="application/json"
             )
         else:
-            st.warning("No live predictions available. The prediction service might be offline.")
-            st.info("Try clicking the Refresh button or check if the prediction service is running.")
-
+            st.warning("No predictions available.")
+            st.info("Check if the live prediction service is running.")
+    
     elif view_type == "Model Comparison":
         st.header("Model Performance Comparison")
-        results = load_all_models_results("mlops-brza")
-        if results:
-            plot_model_comparison(results)
+        all_results = load_all_models_results("mlops-brza")
+        if all_results:
+            plot_model_comparison(all_results)
         else:
-            st.warning("No model results found")
+            st.warning("No results found.")
     
     else:
         model_type = st.sidebar.selectbox(
@@ -309,14 +268,11 @@ def main():
             results = load_model_results("mlops-brza", run_id)
             
             if results:
-                # Display model type and timestamp
-                st.subheader(f"Model Type: {results.get('model_type', model_type)}")
+                st.subheader(f"Model Type: {results['model_type']}")
                 st.text(f"Training Time: {results['timestamp']}")
                 
-                # Display metrics
                 st.header("Model Performance Metrics")
                 metrics = results['metrics']
-                
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("MSE", f"{metrics['mse']:.2f}")
@@ -327,34 +283,17 @@ def main():
                 with col4:
                     st.metric("MAE", f"{metrics['mae']:.2f}")
                 
-                # Predictions plot
                 st.header("Model Predictions")
                 plot_predictions(results)
                 
-                # Feature importance (for tree-based models)
-                if model_type in ["XGBoost", "Decision Tree", "LightGBM"]:
-                    st.header("Feature Importance")
-                    plot_feature_importance(results)
-                
-                # Model parameters
                 with st.expander("Model Parameters"):
-                    st.json(results['parameters'])
+                    st.json(results.get('parameters', {}))  # Safely handle missing 'parameters'
                 
-                # Training details
                 with st.expander("Training Details"):
-                    st.text(f"Run ID: {results['run_id']}")
-                    st.text(f"Model Type: {results.get('model_type', model_type)}")
+                    st.text(f"Run ID: {run_id}")
                     st.text(f"Training Time: {results['timestamp']}")
-                
-                # Download results
-                st.sidebar.download_button(
-                    label="Download Results",
-                    data=json.dumps(results, indent=2),
-                    file_name=f"{model_type.lower()}_{run_id}.json",
-                    mime="application/json"
-                )
-        else:
-            st.info("👈 Please enter a Run ID in the sidebar to view results")
+            else:
+                st.warning("Run ID not found.")
 
 if __name__ == "__main__":
     main()
