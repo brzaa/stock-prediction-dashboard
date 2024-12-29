@@ -9,14 +9,24 @@ from datetime import datetime
 import time
 
 # Page configuration
-st.set_page_config(page_title="Stock Price Prediction Dashboard", page_icon="📈", layout="wide")
+st.set_page_config(
+    page_title="Stock Price Prediction Dashboard",
+    page_icon="📈",
+    layout="wide"
+)
 
-# Custom CSS
+# Custom CSS for styling
 st.markdown("""
     <style>
-    .main > div {padding-top: 1rem;}
-    .block-container {padding-top: 1rem;}
-    .element-container {margin-bottom: 1rem;}
+    .stRadio [role=radiogroup] {
+        gap: 1rem;
+    }
+    .stRadio label {
+        background: #1E1E1E;
+        padding: 0.8rem;
+        border-radius: 0.5rem;
+        min-width: 120px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -28,8 +38,21 @@ MODEL_TYPES = {
     "LightGBM": "lightgbm"
 }
 
+# Initialize session state if not exists
+if 'page' not in st.session_state:
+    st.session_state.page = 'app'
+
+# Sidebar navigation
+with st.sidebar:
+    st.title("app")
+    if st.button("Historical Analysis"):
+        st.session_state.page = 'historical'
+    if st.button("Live Predictions"):
+        st.session_state.page = 'live'
+
 @st.cache_resource
 def get_gcs_client():
+    """Initialize GCS client with credentials"""
     try:
         credentials = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"]
@@ -39,258 +62,43 @@ def get_gcs_client():
         st.error(f"Error initializing GCS client: {str(e)}")
         return None
 
-def load_model_results(bucket_name: str, run_id: str) -> dict:
-    try:
-        client = get_gcs_client()
-        if not client:
-            return None
-            
-        bucket = client.bucket(bucket_name)
-        
-        paths = [
-            f'model_outputs/{run_id}/results.json',
-            f'models/{run_id}/results.json'
-        ]
-        
-        for model_type in MODEL_TYPES.values():
-            paths.extend([
-                f'models/{model_type}/{run_id}/results.json',
-                f'models/{model_type}_optimized/{run_id}/results.json',
-                f'models/{model_type}_advanced/{run_id}/results.json'
-            ])
-        
-        for path in paths:
-            blob = bucket.blob(path)
-            if blob.exists():
-                st.success(f"Found results at: {path}")
-                return json.loads(blob.download_as_string())
-        
-        st.error(f"No results found for Run ID: {run_id}")
-        return None
-        
-    except Exception as e:
-        st.error(f"Error loading results: {str(e)}")
-        return None
-
-def load_all_models_results(bucket_name: str) -> list:
-    try:
-        client = get_gcs_client()
-        if not client:
-            return []
-            
-        bucket = client.bucket(bucket_name)
-        all_results = []
-        
-        # Search in both models and model_outputs directories
-        prefixes = ['models/', 'model_outputs/']
-        for prefix in prefixes:
-            blobs = bucket.list_blobs(prefix=prefix)
-            for blob in blobs:
-                if blob.name.endswith('results.json'):
-                    try:
-                        results = json.loads(blob.download_as_string())
-                        if 'metrics' in results:
-                            # Add model type if not present
-                            if 'model_type' not in results:
-                                for model_type in MODEL_TYPES.values():
-                                    if model_type in blob.name:
-                                        results['model_type'] = model_type
-                                        break
-                            all_results.append(results)
-                    except Exception as e:
-                        continue
-                    
-        return all_results
-    except Exception as e:
-        st.error(f"Error loading results: {str(e)}")
-        return []
-
-def get_latest_predictions(model_type: str) -> dict:
-    try:
-        client = get_gcs_client()
-        if not client:
-            return None
-            
-        internal_model_type = MODEL_TYPES.get(model_type, model_type.lower())
-        bucket = client.bucket("mlops-brza")
-        
-        paths = [
-            f'live_predictions/{internal_model_type}/latest.json',
-            f'live_predictions/{internal_model_type}_optimized/latest.json',
-            f'live_predictions/{internal_model_type}_advanced/latest.json'
-        ]
-        
-        for path in paths:
-            blob = bucket.blob(path)
-            if blob.exists():
-                return json.loads(blob.download_as_string())
-                
-        st.warning(f"No predictions found for {model_type}")
-        return None
-        
-    except Exception as e:
-        st.error(f"Error fetching predictions: {str(e)}")
-        return None
-
-def plot_predictions(results):
-    if not results or 'predictions' not in results or 'actual_values' not in results:
-        st.error("Invalid results format for plotting")
-        return
-
-    dates = []
-    if 'dates' in results:
-        dates = pd.to_datetime(results['dates'])
-    else:
-        dates = pd.date_range(
-            end=pd.Timestamp.now(),
-            periods=len(results['actual_values']),
-            freq='M'
-        )
-
-    df = pd.DataFrame({
-        'Date': dates,
-        'Actual': results['actual_values'],
-        'Predicted': results['predictions']
-    })
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df['Date'],
-        y=df['Actual'],
-        name="Actual",
-        line=dict(color="#2E86C1", width=2)
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=df['Date'],
-        y=df['Predicted'],
-        name="Predicted",
-        line=dict(color="#E74C3C", width=2)
-    ))
-
-    fig.update_layout(
-        title="Stock Price Predictions vs Actual Values",
-        xaxis_title="Date",
-        yaxis_title="Price",
-        template="plotly_dark",
-        height=500,
-        xaxis=dict(
-            tickformat="%b %Y",
-            tickangle=45,
-            gridcolor="rgba(255,255,255,0.1)"
-        ),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.1)"),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-def display_metrics(metrics):
-    cols = st.columns(4)
-    for i, (col, (metric, value)) in enumerate(zip(cols, metrics.items())):
-        with col:
-            st.metric(
-                label=metric.upper(),
-                value=f"{value:.4f}"
-            )
-
-def display_model_comparison():
-    results = load_all_models_results("mlops-brza")
-    if not results:
-        st.warning("No model results available")
-        return
-
-    st.subheader("Model Performance Comparison")
-    
-    # Create comparison dataframe
-    comparison_data = []
-    for result in results:
-        if 'metrics' in result and 'model_type' in result:
-            comparison_data.append({
-                'Model Type': result['model_type'].replace('_', ' ').title(),
-                'Run ID': result.get('run_id', 'N/A'),
-                'Timestamp': result.get('timestamp', 'N/A'),
-                'MSE': result['metrics']['mse'],
-                'RMSE': result['metrics']['rmse'],
-                'R²': result['metrics']['r2'],
-                'MAE': result['metrics']['mae']
-            })
-    
-    df = pd.DataFrame(comparison_data)
-    
-    # Display metrics
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        best_mse = df.loc[df['MSE'].idxmin()]
-        st.metric("Best MSE", best_mse['Model Type'], f"{best_mse['MSE']:.4f}")
-    with col2:
-        best_rmse = df.loc[df['RMSE'].idxmin()]
-        st.metric("Best RMSE", best_rmse['Model Type'], f"{best_rmse['RMSE']:.4f}")
-    with col3:
-        best_r2 = df.loc[df['R²'].idxmax()]
-        st.metric("Best R²", best_r2['Model Type'], f"{best_r2['R²']:.4f}")
-    with col4:
-        best_mae = df.loc[df['MAE'].idxmin()]
-        st.metric("Best MAE", best_mae['Model Type'], f"{best_mae['MAE']:.4f}")
-
-    # Display table with run IDs and copy button
-    st.subheader("Detailed Model Comparison")
-    df_display = df.copy()
-    df_display.index += 1  # Start index from 1 instead of 0
-    st.dataframe(
-        df_display.style.highlight_min(['MSE', 'RMSE', 'MAE'])
-            .highlight_max(['R²'])
-            .format({
-                'MSE': '{:.6f}',
-                'RMSE': '{:.6f}',
-                'R²': '{:.6f}',
-                'MAE': '{:.6f}'
-            }),
-        use_container_width=True
-    )
-
-def display_historical_results(results):
-    st.subheader(f"Model Type: {results.get('model_type', 'Unknown').title()}")
-    timestamp = results.get('timestamp', 'Unknown')
-    if timestamp != 'Unknown':
-        timestamp = pd.to_datetime(timestamp).strftime("%Y-%m-%d %H:%M:%S")
-    st.text(f"Training Time: {timestamp}")
-    
-    if 'metrics' in results:
-        st.subheader("Model Metrics")
-        display_metrics(results['metrics'])
-    
-    st.subheader("Price Predictions")
-    plot_predictions(results)
+# Your other functions remain the same (load_model_results, get_latest_predictions, etc.)
+# ... (keep all the functions from previous code)
 
 def main():
     st.title("📈 Stock Price Prediction Dashboard")
-
-    # Sidebar navigation
-    with st.sidebar:
-        st.header("Navigation")
-        model_type = st.selectbox("Select Model", list(MODEL_TYPES.keys()))
-        
-        pages = ["Model Comparison", "Historical Analysis", "Live Predictions"]
-        current_page = st.radio("Select Analysis Type", pages)
-        
-        if current_page == "Historical Analysis":
-            run_id = st.text_input("Enter Run ID")
     
-    # Main content area
-    if current_page == "Model Comparison":
+    # Add page selection at the top
+    model_type = st.selectbox(
+        "Select Model",
+        list(MODEL_TYPES.keys())
+    )
+
+    # Center the analysis type options
+    analysis_type = st.radio(
+        "Analysis Type",
+        ["Historical Analysis", "Live Predictions", "Model Comparison"]
+    )
+
+    # Only show Run ID input for Historical Analysis
+    run_id = None
+    if analysis_type == "Historical Analysis":
+        run_id = st.text_input(
+            "Enter Run ID",
+            help="Enter the model run ID to view historical results"
+        )
+
+    # Display content based on selection
+    if analysis_type == "Live Predictions":
+        display_live_predictions(model_type)
+    elif analysis_type == "Model Comparison":
         display_model_comparison()
-    elif current_page == "Historical Analysis" and 'run_id' in locals() and run_id:
+    elif analysis_type == "Historical Analysis" and run_id:
         results = load_model_results("mlops-brza", run_id)
         if results:
             display_historical_results(results)
-    elif current_page == "Live Predictions":
-        results = get_latest_predictions(model_type)
-        if results:
-            st.success(f"Last Updated: {results.get('timestamp', 'Unknown')}")
-            display_historical_results(results)
+
+# Keep all your display functions (display_metrics, plot_predictions, etc.) the same
 
 if __name__ == "__main__":
     main()
