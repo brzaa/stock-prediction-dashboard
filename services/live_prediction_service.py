@@ -159,14 +159,10 @@ class StockPredictor:
         """Run predictions for all models."""
         logger.info("Starting predictions for all models.")
         try:
-            # Fetch and prepare stock data
             data = self.fetch_stock_data()
             X_train, X_test, y_train, y_test, test_dates, feature_cols = self.prepare_data(data)
-
-            # Detect data drift
             drift_detected, drifted_features = self.detect_drift(X_train, X_test)
 
-            # Train models and save predictions
             for model_type, train_func in self.models.items():
                 try:
                     model, params = train_func(X_train, y_train)
@@ -201,6 +197,7 @@ class StockPredictor:
         except Exception as e:
             logger.error(f"Error in run_predictions: {str(e)}")
 
+
 if __name__ == "__main__":
     predictor = StockPredictor()
     
@@ -209,14 +206,16 @@ if __name__ == "__main__":
         predictor.run_predictions()
         logger.info("Scheduled prediction run completed.")
     
-    job()  # Run immediately
-    schedule.every().day.at("08:00").do(job)
+    # Direct execution for testing
+    predictor.run_predictions()  # Run directly to test functionality
     
-    while True:
-        try:
-            schedule.run_pending()
-            logger.info(f"Waiting for next scheduled run at {schedule.next_run()}.")
-            time.sleep(60)
-        except KeyboardInterrupt:
-            logger.info("Service stopped manually.")
-            break
+    # Uncomment for scheduling
+    # schedule.every().day.at("08:00").do(job)
+    # while True:
+    #     try:
+    #         schedule.run_pending()
+    #         logger.info(f"Waiting for the next scheduled run at {schedule.next_run()}.")
+    #         time.sleep(60)
+    #     except KeyboardInterrupt:
+    #         logger.info("Service stopped manually.")
+    #         break
