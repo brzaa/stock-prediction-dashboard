@@ -145,18 +145,18 @@ class StockPredictor:
     def run_predictions(self):
         """Run predictions for all models."""
         try:
-            # Step 1: Fetch and prepare stock data
+            # Fetch and prepare stock data
             logger.info("Fetching stock data.")
             data = self.fetch_stock_data()
             logger.info("Preparing data for training and testing.")
             X_train, X_test, y_train, y_test, test_dates, feature_cols = self.prepare_data(data)
 
-            # Step 2: Detect data drift
+            # Detect data drift
             logger.info("Detecting data drift.")
             drift_detected, drifted_features = self.detect_drift(X_train, X_test)
             logger.info(f"Drift detected: {drift_detected}. Drifted features: {drifted_features}")
 
-            # Step 3: Train models and save predictions
+            # Train models and save predictions
             for model_type, train_func in self.models.items():
                 try:
                     logger.info(f"Training {model_type} model.")
@@ -190,7 +190,7 @@ class StockPredictor:
                     }
                     
                     # Save results to GCS
-                    logger.info(f"Saving predictions for {model_type}.")
+                    logger.info(f"Saving predictions for {model_type}. Results: {json.dumps(results, indent=4)}")
                     blob = self.bucket.blob(f'live_predictions/{model_type}/latest.json')
                     blob.upload_from_string(json.dumps(results), content_type='application/json')
                     logger.info(f"Successfully saved predictions for {model_type}.")
@@ -204,19 +204,17 @@ if __name__ == "__main__":
     predictor = StockPredictor()
     
     def job():
-        logger.info("Starting daily prediction run")
+        logger.info("Starting prediction run")
         predictor.run_predictions()
-        logger.info("Daily prediction run completed")
+        logger.info("Prediction run completed")
     
     job()  # Run immediately
-
-    # Schedule to run daily at 8:00 AM
-    schedule.every().day.at("08:00").do(job)
     
+    schedule.every().day.at("08:00").do(job)
     while True:
         try:
             schedule.run_pending()
-            time.sleep(60)  # Wait for the next scheduled job
+            time.sleep(60)
         except KeyboardInterrupt:
             logger.info("Service stopped manually")
             break
