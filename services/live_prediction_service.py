@@ -16,7 +16,7 @@ from sklearn.tree import DecisionTreeRegressor
 import yfinance as yf
 import json
 
-# Logging configuration
+# Configure logging
 logging.basicConfig(
     filename='live_predictions.log',
     level=logging.INFO,
@@ -40,12 +40,13 @@ class StockPredictor:
     def fetch_stock_data(self):
         """Fetch stock data from Yahoo Finance"""
         try:
-            end_date = datetime.now().strftime('%Y-%m-%d')
             logger.info("Fetching stock data from Yahoo Finance.")
+            end_date = datetime.now().strftime('%Y-%m-%d')
             data = yf.download('MASB.JK', start='2015-01-01', end=end_date, progress=False)
             
             if data.empty:
-                raise ValueError("No stock data fetched. Please check the ticker symbol or network.")
+                logger.error("No stock data fetched. Please check the ticker symbol or network.")
+                raise ValueError("No stock data fetched.")
             
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = ['_'.join(col).strip() for col in data.columns.values]
@@ -59,6 +60,7 @@ class StockPredictor:
 
     def calculate_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Calculate technical indicators"""
+        logger.info("Calculating technical indicators.")
         df = data.copy()
         df['returns'] = df['close'].pct_change()
         df['log_returns'] = np.log1p(df['returns'])
@@ -71,10 +73,12 @@ class StockPredictor:
         df['volume_ma_5'] = df['volume'].rolling(window=5).mean()
         df['volume_ratio'] = df['volume'] / df['volume_ma_5']
         
+        logger.info("Technical indicators calculated successfully.")
         return df
 
     def prepare_data(self, data: pd.DataFrame):
         """Prepare data for training"""
+        logger.info("Preparing data for training.")
         data = self.calculate_features(data)
         data = data.dropna()
         
@@ -92,9 +96,11 @@ class StockPredictor:
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         
+        logger.info("Data preparation completed.")
         return (X_train_scaled, X_test_scaled, y_train, y_test, test_data.index, feature_cols)
 
     def train_xgboost(self, X_train, y_train):
+        """Train an XGBoost model"""
         params = {
             "objective": "reg:squarederror",
             "max_depth": 5,
@@ -103,9 +109,11 @@ class StockPredictor:
         }
         model = xgb.XGBRegressor(**params)
         model.fit(X_train, y_train)
+        logger.info("XGBoost model trained successfully.")
         return model, params
 
     def train_lightgbm(self, X_train, y_train):
+        """Train a LightGBM model"""
         params = {
             "objective": "regression",
             "max_depth": 5,
@@ -114,9 +122,11 @@ class StockPredictor:
         }
         model = LGBMRegressor(**params)
         model.fit(X_train, y_train)
+        logger.info("LightGBM model trained successfully.")
         return model, params
 
     def train_decision_tree(self, X_train, y_train):
+        """Train a Decision Tree model"""
         params = {
             "max_depth": 10,
             "min_samples_split": 20,
@@ -124,10 +134,12 @@ class StockPredictor:
         }
         model = DecisionTreeRegressor(**params)
         model.fit(X_train, y_train)
+        logger.info("Decision Tree model trained successfully.")
         return model, params
 
     def detect_drift(self, X_train, X_test):
         """Detect data drift using KS test"""
+        logger.info("Detecting data drift.")
         drift_detected = False
         drifted_features = []
         
@@ -140,42 +152,33 @@ class StockPredictor:
                     'p_value': float(p_value)
                 })
         
+        logger.info(f"Data drift detection completed. Drift detected: {drift_detected}.")
         return drift_detected, drifted_features
 
     def run_predictions(self):
         """Run predictions for all models."""
+        logger.info("Starting predictions for all models.")
         try:
             # Fetch and prepare stock data
-            logger.info("Fetching stock data.")
             data = self.fetch_stock_data()
-            logger.info("Preparing data for training and testing.")
             X_train, X_test, y_train, y_test, test_dates, feature_cols = self.prepare_data(data)
 
             # Detect data drift
-            logger.info("Detecting data drift.")
             drift_detected, drifted_features = self.detect_drift(X_train, X_test)
-            logger.info(f"Drift detected: {drift_detected}. Drifted features: {drifted_features}")
 
             # Train models and save predictions
             for model_type, train_func in self.models.items():
                 try:
-                    logger.info(f"Training {model_type} model.")
-                    
-                    # Train the model
                     model, params = train_func(X_train, y_train)
-                    
-                    # Make predictions
                     predictions = model.predict(X_test)
-                    
-                    # Calculate metrics
+
                     metrics = {
                         'mse': float(mean_squared_error(y_test, predictions)),
                         'rmse': float(np.sqrt(mean_squared_error(y_test, predictions))),
                         'r2': float(r2_score(y_test, predictions)),
                         'mae': float(mean_absolute_error(y_test, predictions))
                     }
-                    
-                    # Prepare results
+
                     results = {
                         'timestamp': datetime.now().isoformat(),
                         'model_type': model_type,
@@ -188,33 +191,32 @@ class StockPredictor:
                         'drifted_features': drifted_features,
                         'feature_names': feature_cols
                     }
-                    
-                    # Save results to GCS
-                    logger.info(f"Saving predictions for {model_type}. Results: {json.dumps(results, indent=4)}")
+
+                    logger.info(f"Saving predictions for {model_type}: {json.dumps(results, indent=4)}")
                     blob = self.bucket.blob(f'live_predictions/{model_type}/latest.json')
                     blob.upload_from_string(json.dumps(results), content_type='application/json')
-                    logger.info(f"Successfully saved predictions for {model_type}.")
+                    logger.info(f"Predictions saved for {model_type}.")
                 except Exception as e:
                     logger.error(f"Error in {model_type} predictions: {str(e)}")
         except Exception as e:
             logger.error(f"Error in run_predictions: {str(e)}")
 
-
 if __name__ == "__main__":
     predictor = StockPredictor()
     
     def job():
-        logger.info("Starting prediction run")
+        logger.info("Starting scheduled prediction run.")
         predictor.run_predictions()
-        logger.info("Prediction run completed")
+        logger.info("Scheduled prediction run completed.")
     
     job()  # Run immediately
-    
     schedule.every().day.at("08:00").do(job)
+    
     while True:
         try:
             schedule.run_pending()
+            logger.info(f"Waiting for next scheduled run at {schedule.next_run()}.")
             time.sleep(60)
         except KeyboardInterrupt:
-            logger.info("Service stopped manually")
+            logger.info("Service stopped manually.")
             break
