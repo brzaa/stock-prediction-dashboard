@@ -11,6 +11,21 @@ def get_gcs_client():
     )
     return storage.Client(credentials=credentials)
 
+def test_gcs_connection(bucket_name: str = "mlops-brza"):
+    """Test GCS connection"""
+    try:
+        client = get_gcs_client()
+        bucket = client.bucket(bucket_name)
+        # List some blobs to test connection
+        blobs = list(bucket.list_blobs(max_results=5))
+        st.write("GCS Connection successful")
+        st.write("Found files:", [blob.name for blob in blobs])
+        return True
+    except Exception as e:
+        st.error(f"GCS Connection failed: {str(e)}")
+        return False
+
+
 def get_latest_predictions(model_type: str, bucket_name: str = "mlops-brza") -> dict:
     """Read latest predictions from storage"""
     try:
