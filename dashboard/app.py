@@ -28,7 +28,6 @@ MODEL_TYPES = {
     "LightGBM": "lightgbm"
 }
 
-# Cache GCS client
 @st.cache_resource
 def get_gcs_client():
     try:
@@ -45,22 +44,25 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
         client = get_gcs_client()
         if not client:
             return None
-        
+            
         bucket = client.bucket(bucket_name)
+        
         paths = [
             f'model_outputs/{run_id}/results.json',
-            f'models/lstm_optimized/{run_id}/results.json',
-            f'models/lstm_advanced/{run_id}/results.json',
-            f'models/lstm_default/{run_id}/results.json'
+            f'models/{run_id}/results.json'
         ]
         
-        # Add paths for each model type
         for model_type in MODEL_TYPES.values():
-            paths.append(f'models/{model_type}/{run_id}/results.json')
+            paths.extend([
+                f'models/{model_type}/{run_id}/results.json',
+                f'models/{model_type}_optimized/{run_id}/results.json',
+                f'models/{model_type}_advanced/{run_id}/results.json'
+            ])
         
         for path in paths:
             blob = bucket.blob(path)
             if blob.exists():
+                st.success(f"Found results at: {path}")
                 return json.loads(blob.download_as_string())
         
         st.error(f"No results found for Run ID: {run_id}")
@@ -79,20 +81,24 @@ def load_all_models_results(bucket_name: str) -> list:
         bucket = client.bucket(bucket_name)
         all_results = []
         
-        # Search in models directory
-        for blob in bucket.list_blobs(prefix='models/'):
-            if blob.name.endswith('results.json'):
-                try:
-                    results = json.loads(blob.download_as_string())
-                    if 'metrics' in results:
-                        if 'model_type' not in results:
-                            for model_type in MODEL_TYPES.values():
-                                if model_type in blob.name:
-                                    results['model_type'] = model_type
-                                    break
-                        all_results.append(results)
-                except:
-                    continue
+        # Search in both models and model_outputs directories
+        prefixes = ['models/', 'model_outputs/']
+        for prefix in prefixes:
+            blobs = bucket.list_blobs(prefix=prefix)
+            for blob in blobs:
+                if blob.name.endswith('results.json'):
+                    try:
+                        results = json.loads(blob.download_as_string())
+                        if 'metrics' in results:
+                            # Add model type if not present
+                            if 'model_type' not in results:
+                                for model_type in MODEL_TYPES.values():
+                                    if model_type in blob.name:
+                                        results['model_type'] = model_type
+                                        break
+                            all_results.append(results)
+                    except Exception as e:
+                        continue
                     
         return all_results
     except Exception as e:
@@ -110,7 +116,8 @@ def get_latest_predictions(model_type: str) -> dict:
         
         paths = [
             f'live_predictions/{internal_model_type}/latest.json',
-            f'live_predictions/{internal_model_type}_optimized/latest.json'
+            f'live_predictions/{internal_model_type}_optimized/latest.json',
+            f'live_predictions/{internal_model_type}_advanced/latest.json'
         ]
         
         for path in paths:
@@ -204,6 +211,7 @@ def display_model_comparison():
             comparison_data.append({
                 'Model Type': result['model_type'].replace('_', ' ').title(),
                 'Run ID': result.get('run_id', 'N/A'),
+                'Timestamp': result.get('timestamp', 'N/A'),
                 'MSE': result['metrics']['mse'],
                 'RMSE': result['metrics']['rmse'],
                 'R²': result['metrics']['r2'],
@@ -227,19 +235,29 @@ def display_model_comparison():
         best_mae = df.loc[df['MAE'].idxmin()]
         st.metric("Best MAE", best_mae['Model Type'], f"{best_mae['MAE']:.4f}")
 
-    # Display table
+    # Display table with run IDs and copy button
+    st.subheader("Detailed Model Comparison")
+    df_display = df.copy()
+    df_display.index += 1  # Start index from 1 instead of 0
     st.dataframe(
-        df.style.highlight_min(['MSE', 'RMSE', 'MAE'])
+        df_display.style.highlight_min(['MSE', 'RMSE', 'MAE'])
             .highlight_max(['R²'])
             .format({
                 'MSE': '{:.6f}',
                 'RMSE': '{:.6f}',
                 'R²': '{:.6f}',
                 'MAE': '{:.6f}'
-            })
+            }),
+        use_container_width=True
     )
 
 def display_historical_results(results):
+    st.subheader(f"Model Type: {results.get('model_type', 'Unknown').title()}")
+    timestamp = results.get('timestamp', 'Unknown')
+    if timestamp != 'Unknown':
+        timestamp = pd.to_datetime(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    st.text(f"Training Time: {timestamp}")
+    
     if 'metrics' in results:
         st.subheader("Model Metrics")
         display_metrics(results['metrics'])
@@ -253,25 +271,21 @@ def main():
     # Sidebar navigation
     with st.sidebar:
         st.header("Navigation")
-        # Select Model dropdown
         model_type = st.selectbox("Select Model", list(MODEL_TYPES.keys()))
-
-        # Analysis Type radio buttons (in the same order as you requested)
+        
         pages = ["Model Comparison", "Historical Analysis", "Live Predictions"]
         current_page = st.radio("Select Analysis Type", pages)
         
-        # Run ID input (only show for Historical Analysis)
         if current_page == "Historical Analysis":
             run_id = st.text_input("Enter Run ID")
     
     # Main content area
     if current_page == "Model Comparison":
         display_model_comparison()
-    elif current_page == "Historical Analysis":
-        if 'run_id' in locals():
-            results = load_model_results("mlops-brza", run_id)
-            if results:
-                display_historical_results(results)
+    elif current_page == "Historical Analysis" and 'run_id' in locals() and run_id:
+        results = load_model_results("mlops-brza", run_id)
+        if results:
+            display_historical_results(results)
     elif current_page == "Live Predictions":
         results = get_latest_predictions(model_type)
         if results:
