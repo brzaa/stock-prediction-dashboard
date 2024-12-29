@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 from google.cloud import storage
 import logging
-import schedule
 import time
 from datetime import datetime
 from typing import Dict, Any
@@ -15,6 +14,7 @@ from lightgbm import LGBMRegressor
 from sklearn.tree import DecisionTreeRegressor
 import yfinance as yf
 import json
+import signal
 
 # Configure logging
 logging.basicConfig(
@@ -24,6 +24,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class TimeoutException(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException()
+
+signal.signal(signal.SIGALRM, timeout_handler)
 
 class StockPredictor:
     def __init__(self, bucket_name="mlops-brza"):
@@ -165,9 +172,12 @@ class StockPredictor:
 
             for model_type, train_func in self.models.items():
                 try:
+                    logger.info(f"Starting training for {model_type}...")
+                    signal.alarm(300)  # Timeout after 5 minutes
                     model, params = train_func(X_train, y_train)
                     predictions = model.predict(X_test)
-
+                    signal.alarm(0)  # Disable the timeout
+                    
                     metrics = {
                         'mse': float(mean_squared_error(y_test, predictions)),
                         'rmse': float(np.sqrt(mean_squared_error(y_test, predictions))),
@@ -182,16 +192,18 @@ class StockPredictor:
                         'actual_values': y_test.tolist(),
                         'dates': [d.strftime('%Y-%m-%d') for d in test_dates],
                         'metrics': metrics,
-                        'parameters': params,
+                        'parameters': params if params else {},  # Ensure parameters is included
                         'drift_detected': drift_detected,
                         'drifted_features': drifted_features,
                         'feature_names': feature_cols
                     }
 
-                    logger.info(f"Saving predictions for {model_type}: {json.dumps(results, indent=4)}")
+                    logger.info(f"Saving results for {model_type} to GCS...")
                     blob = self.bucket.blob(f'live_predictions/{model_type}/latest.json')
                     blob.upload_from_string(json.dumps(results), content_type='application/json')
-                    logger.info(f"Predictions saved for {model_type}.")
+                    logger.info(f"Results saved for {model_type}.")
+                except TimeoutException:
+                    logger.error(f"Timeout during {model_type} training or prediction.")
                 except Exception as e:
                     logger.error(f"Error in {model_type} predictions: {str(e)}")
         except Exception as e:
@@ -200,22 +212,4 @@ class StockPredictor:
 
 if __name__ == "__main__":
     predictor = StockPredictor()
-    
-    def job():
-        logger.info("Starting scheduled prediction run.")
-        predictor.run_predictions()
-        logger.info("Scheduled prediction run completed.")
-    
-    # Direct execution for testing
-    predictor.run_predictions()  # Run directly to test functionality
-    
-    # Uncomment for scheduling
-    # schedule.every().day.at("08:00").do(job)
-    # while True:
-    #     try:
-    #         schedule.run_pending()
-    #         logger.info(f"Waiting for the next scheduled run at {schedule.next_run()}.")
-    #         time.sleep(60)
-    #     except KeyboardInterrupt:
-    #         logger.info("Service stopped manually.")
-    #         break
+    predictor.run_predictions()  # Run directly for immediate testing
