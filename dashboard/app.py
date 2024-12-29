@@ -28,7 +28,6 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
         client = get_gcs_client()
         bucket = client.bucket(bucket_name)
         
-        # List of possible paths to check
         paths = [
             f'model_outputs/{run_id}/results.json',  # Default path
             f'model_outputs/lightgbm/{run_id}/results.json',  # LightGBM path
@@ -56,7 +55,6 @@ def load_all_models_results(bucket_name: str) -> list:
         client = get_gcs_client()
         bucket = client.bucket(bucket_name)
         
-        # List all results files
         all_results = []
         model_types = ['xgboost', 'lstm', 'decision_tree', 'lightgbm']
         
@@ -242,6 +240,11 @@ def main():
                     
                     # Plot predictions
                     plot_predictions(results)
+                    
+                    # Feature importance for tree-based models
+                    if model_type.lower() in ["xgboost", "decision_tree", "lightgbm"]:
+                        st.subheader("Feature Importance")
+                        plot_feature_importance(results)
                     
                     # Show drift detection results
                     st.subheader("Data Drift Analysis")
