@@ -5,6 +5,7 @@ from google.oauth2 import service_account
 import json
 import plotly.graph_objects as go
 import plotly.express as px
+from utils.live_prediction_utils import LivePredictionPipeline
 
 # Page configuration
 st.set_page_config(
@@ -30,6 +31,7 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
         # List of possible paths to check
         paths = [
             f'model_outputs/{run_id}/results.json',  # Default path
+            f'model_outputs/lightgbm/{run_id}/results.json',  # LightGBM path
             f'model_outputs/lstm/{run_id}/results.json',  # LSTM specific path
             f'model_outputs/decision_tree/{run_id}/results.json',  # Decision Tree path
             f'model_outputs/xgboost/{run_id}/results.json'  # XGBoost path
@@ -56,7 +58,7 @@ def load_all_models_results(bucket_name: str) -> list:
         
         # List all results files
         all_results = []
-        model_types = ['xgboost', 'lstm', 'decision_tree']
+        model_types = ['xgboost', 'lstm', 'decision_tree', 'lightgbm']
         
         # Search in all possible paths
         for blob in bucket.list_blobs(prefix='model_outputs/'):
@@ -77,6 +79,16 @@ def load_all_models_results(bucket_name: str) -> list:
     except Exception as e:
         st.error(f"Error loading results: {str(e)}")
         return []
+
+def get_live_predictions(model_type: str) -> dict:
+    """Get live predictions for specified model"""
+    try:
+        pipeline = LivePredictionPipeline()
+        results = pipeline.get_predictions(model_type)
+        return results
+    except Exception as e:
+        st.error(f"Error getting live predictions: {str(e)}")
+        return None
 
 def plot_predictions(results):
     """Plot predictions vs actual values"""
@@ -194,10 +206,60 @@ def main():
     # Add view selection
     view_type = st.sidebar.radio(
         "Select View",
-        ["Individual Model Analysis", "Model Comparison"]
+        ["Individual Model Analysis", "Model Comparison", "Live Predictions"]
     )
     
-    if view_type == "Model Comparison":
+    if view_type == "Live Predictions":
+        st.header("🔴 Live Stock Price Predictions")
+        
+        # Model selection for live predictions
+        model_type = st.sidebar.selectbox(
+            "Select Model for Live Predictions",
+            ["XGBoost", "Decision Tree", "LSTM", "LightGBM"],
+            key="live_model_select"
+        )
+        
+        # Add refresh button
+        if st.button("🔄 Refresh Predictions"):
+            with st.spinner(f"Getting live predictions for {model_type}..."):
+                results = get_live_predictions(model_type.lower())
+                if results:
+                    # Show last update time
+                    st.info(f"Last Updated: {results['timestamp']}")
+                    
+                    # Display metrics
+                    st.subheader("Model Performance Metrics")
+                    metrics = results['metrics']
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("MSE", f"{metrics['mse']:.2f}")
+                    with col2:
+                        st.metric("RMSE", f"{metrics['rmse']:.2f}")
+                    with col3:
+                        st.metric("R²", f"{metrics['r2']:.2f}")
+                    with col4:
+                        st.metric("MAE", f"{metrics['mae']:.2f}")
+                    
+                    # Plot predictions
+                    plot_predictions(results)
+                    
+                    # Show drift detection results
+                    st.subheader("Data Drift Analysis")
+                    if results['drift_detected']:
+                        st.warning("🚨 Data drift detected!")
+                        st.write("Drifted Features:")
+                        for feature in results['drifted_features']:
+                            st.write(f"- {feature['feature']}: p-value = {feature['p_value']:.4f}")
+                    else:
+                        st.success("✅ No data drift detected")
+                    
+                    # Show model parameters
+                    with st.expander("Model Parameters"):
+                        st.json(results['parameters'])
+        else:
+            st.info("Click 'Refresh Predictions' to get the latest predictions")
+    
+    elif view_type == "Model Comparison":
         st.header("Model Performance Comparison")
         results = load_all_models_results("mlops-brza")
         if results:
@@ -208,7 +270,7 @@ def main():
     else:
         model_type = st.sidebar.selectbox(
             "Select Model Type",
-            ["XGBoost", "Decision Tree", "LSTM"]
+            ["XGBoost", "Decision Tree", "LSTM", "LightGBM"]
         )
         
         run_id = st.sidebar.text_input("Enter Run ID")
@@ -239,8 +301,8 @@ def main():
                 st.header("Model Predictions")
                 plot_predictions(results)
                 
-                # Feature importance (only for tree-based models)
-                if model_type in ["XGBoost", "Decision Tree"]:
+                # Feature importance (for tree-based models)
+                if model_type in ["XGBoost", "Decision Tree", "LightGBM"]:
                     st.header("Feature Importance")
                     plot_feature_importance(results)
                 
