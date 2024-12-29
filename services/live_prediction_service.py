@@ -1,5 +1,3 @@
-
-# live_prediction_service.py
 import os
 import pandas as pd
 import numpy as np
@@ -25,6 +23,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
 
 class StockPredictor:
     def __init__(self, bucket_name="mlops-brza"):
@@ -144,18 +143,31 @@ class StockPredictor:
         return drift_detected, drifted_features
 
     def run_predictions(self):
-        """Run predictions for all models"""
+        """Run predictions for all models."""
         try:
+            # Step 1: Fetch and prepare stock data
+            logger.info("Fetching stock data.")
             data = self.fetch_stock_data()
+            logger.info("Preparing data for training and testing.")
             X_train, X_test, y_train, y_test, test_dates, feature_cols = self.prepare_data(data)
-            
+
+            # Step 2: Detect data drift
+            logger.info("Detecting data drift.")
             drift_detected, drifted_features = self.detect_drift(X_train, X_test)
-            
+            logger.info(f"Drift detected: {drift_detected}. Drifted features: {drifted_features}")
+
+            # Step 3: Train models and save predictions
             for model_type, train_func in self.models.items():
                 try:
+                    logger.info(f"Training {model_type} model.")
+                    
+                    # Train the model
                     model, params = train_func(X_train, y_train)
+                    
+                    # Make predictions
                     predictions = model.predict(X_test)
                     
+                    # Calculate metrics
                     metrics = {
                         'mse': float(mean_squared_error(y_test, predictions)),
                         'rmse': float(np.sqrt(mean_squared_error(y_test, predictions))),
@@ -163,6 +175,7 @@ class StockPredictor:
                         'mae': float(mean_absolute_error(y_test, predictions))
                     }
                     
+                    # Prepare results
                     results = {
                         'timestamp': datetime.now().isoformat(),
                         'model_type': model_type,
@@ -176,30 +189,34 @@ class StockPredictor:
                         'feature_names': feature_cols
                     }
                     
+                    # Save results to GCS
+                    logger.info(f"Saving predictions for {model_type}.")
                     blob = self.bucket.blob(f'live_predictions/{model_type}/latest.json')
                     blob.upload_from_string(json.dumps(results), content_type='application/json')
-                    logger.info(f"Successfully saved predictions for {model_type}")
+                    logger.info(f"Successfully saved predictions for {model_type}.")
                 except Exception as e:
                     logger.error(f"Error in {model_type} predictions: {str(e)}")
-                    
         except Exception as e:
             logger.error(f"Error in run_predictions: {str(e)}")
+
 
 if __name__ == "__main__":
     predictor = StockPredictor()
     
     def job():
-        logger.info("Starting prediction run")
+        logger.info("Starting daily prediction run")
         predictor.run_predictions()
-        logger.info("Prediction run completed")
+        logger.info("Daily prediction run completed")
     
     job()  # Run immediately
+
+    # Schedule to run daily at 8:00 AM
+    schedule.every().day.at("08:00").do(job)
     
-    schedule.every(1).hours.do(job)
     while True:
         try:
             schedule.run_pending()
-            time.sleep(60)
+            time.sleep(60)  # Wait for the next scheduled job
         except KeyboardInterrupt:
             logger.info("Service stopped manually")
             break
