@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import yfinance as yf
-import talib
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from scipy import stats
 import xgboost as xgb
@@ -17,6 +16,22 @@ from google.cloud import storage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def calculate_rsi(data, periods=14):
+    """Calculate RSI using pandas"""
+    delta = data.diff()
+    gain = (delta.clip(lower=0)).rolling(window=periods).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=periods).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(data, fast=12, slow=26, signal=9):
+    """Calculate MACD using pandas"""
+    exp1 = data.ewm(span=fast, adjust=False).mean()
+    exp2 = data.ewm(span=slow, adjust=False).mean()
+    macd = exp1 - exp2
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return macd, signal_line
 
 def fetch_latest_data():
     """Fetch the latest stock data"""
@@ -42,24 +57,24 @@ def calculate_features(df):
     """Calculate technical indicators"""
     df = df.copy()
     
-    # Technical indicators
-    df['rsi'] = talib.RSI(df['close'].values, timeperiod=14)
-    df['macd'], _, _ = talib.MACD(df['close'].values)
+    # Technical indicators using pandas
+    df['rsi'] = calculate_rsi(df['close'])
+    df['macd'], df['signal'] = calculate_macd(df['close'])
+    
+    # Moving averages
     df['ma7'] = df['close'].rolling(window=7).mean()
     df['ma21'] = df['close'].rolling(window=21).mean()
     
-    # Add momentum indicators
+    # Momentum and volatility
     df['momentum'] = df['close'].pct_change()
     df['volatility'] = df['close'].rolling(window=21).std()
     
+    # Price-based features
+    df['price_change'] = df['close'].diff()
+    df['returns'] = df['close'].pct_change()
+    df['high_low_ratio'] = df['high'] / df['low']
+    
     return df
-
-def prepare_lstm_data(X, sequence_length=10):
-    """Prepare data for LSTM model"""
-    sequences = []
-    for i in range(len(X) - sequence_length):
-        sequences.append(X[i:(i + sequence_length)].values)
-    return np.array(sequences)
 
 class LivePredictionPipeline:
     def __init__(self, gcs_bucket="mlops-brza"):
@@ -157,13 +172,17 @@ class LivePredictionPipeline:
             data = fetch_latest_data()
             data = calculate_features(data)
             
+            # Remove NaN values
+            data = data.dropna()
+            
             # Split into train/test
             train_size = int(len(data) * 0.8)
             train_data = data[:train_size]
             test_data = data[train_size:]
             
             # Prepare features
-            feature_cols = ['rsi', 'macd', 'ma7', 'ma21', 'momentum', 'volatility']
+            feature_cols = ['rsi', 'macd', 'ma7', 'ma21', 'momentum', 'volatility', 
+                          'price_change', 'returns', 'high_low_ratio', 'volume']
             X_train = train_data[feature_cols]
             y_train = train_data['close']
             X_test = test_data[feature_cols]
@@ -210,7 +229,9 @@ class LivePredictionPipeline:
                 'metrics': metrics,
                 'parameters': params,
                 'drift_detected': drift_detected,
-                'drifted_features': drifted_features
+                'drifted_features': drifted_features,
+                'feature_names': feature_cols,
+                'feature_importance': model.feature_importances_.tolist() if hasattr(model, 'feature_importances_') else None
             }
             
             # Save results to GCS
