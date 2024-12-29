@@ -1,12 +1,11 @@
+# File: dashboard/app.py
 
 import streamlit as st
 import pandas as pd
 import json
 import plotly.graph_objects as go
 import plotly.express as px
-from utils.prediction_reader import get_latest_predictions
-from utils.live_prediction_service import fetch_and_preprocess_data, train_and_log_model, ModelMonitor
-from google.cloud import storage
+from utils.live_prediction_service import StockPredictor  # Use StockPredictor
 import logging
 
 # Page configuration
@@ -59,7 +58,6 @@ def main():
     )
     
     bucket_name = "mlops-brza"
-    project_id = "mlops-thesis"
     
     if view_type == "Live Predictions":
         st.header("🔴 Live Stock Price Predictions")
@@ -70,51 +68,118 @@ def main():
         )
         
         if st.button("🔄 Refresh Predictions"):
-            st.write("Fetching and processing new data...")
+            st.write("Using MASB_latest.csv for predictions...")
             try:
-                # Fetch and preprocess new data
-                X_train, y_train, X_test, y_test = fetch_and_preprocess_data(project_id, bucket_name)
+                predictor = StockPredictor(bucket_name=bucket_name)
+                predictor.run_predictions()  # Executes prediction logic with MASB_latest.csv
                 
-                st.write("Training model...")
-                run_id, model, metrics = train_and_log_model(X_train, y_train, X_test, y_test)
+                # Fetch the latest predictions
+                blob_path = f"live_predictions/{model_type.lower()}/latest.json"
+                client = predictor.client
+                bucket = client.bucket(bucket_name)
+                blob = bucket.blob(blob_path)
                 
-                st.success("Model trained and predictions updated!")
-                st.write(f"Run ID: {run_id}")
-                
-                # Display metrics
-                st.header("Model Performance Metrics")
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("MSE", f"{metrics['mse']:.2f}")
-                with col2:
-                    st.metric("RMSE", f"{metrics['rmse']:.2f}")
-                with col3:
-                    st.metric("R²", f"{metrics['r2']:.2f}")
-                with col4:
-                    st.metric("MAE", f"{metrics['mae']:.2f}")
-                
-                # Plot predictions
-                predictions = pd.DataFrame({
-                    "Actual": y_test.values,
-                    "Predicted": model.predict(X_test)
-                }, index=X_test.index)
-                plot_predictions({
-                    "actual_values": predictions["Actual"].tolist(),
-                    "predictions": predictions["Predicted"].tolist(),
-                    "dates": [d.strftime("%Y-%m-%d") for d in X_test.index]
-                })
-                
-                st.success("Live predictions refreshed successfully!")
+                if blob.exists():
+                    results = json.loads(blob.download_as_string())
+                    st.success("Predictions refreshed successfully!")
+                    
+                    # Display metrics
+                    st.header("Model Performance Metrics")
+                    metrics = results['metrics']
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("MSE", f"{metrics['mse']:.2f}")
+                    with col2:
+                        st.metric("RMSE", f"{metrics['rmse']:.2f}")
+                    with col3:
+                        st.metric("R²", f"{metrics['r2']:.2f}")
+                    with col4:
+                        st.metric("MAE", f"{metrics['mae']:.2f}")
+                    
+                    # Plot predictions
+                    plot_predictions(results)
+                    
+                    # Show drift detection results
+                    st.subheader("Data Drift Analysis")
+                    if results['drift_detected']:
+                        st.warning("🚨 Data drift detected!")
+                        st.write("Drifted Features:")
+                        for feature in results['drifted_features']:
+                            st.write(f"- {feature['feature']}: p-value = {feature['p_value']:.4f}")
+                    else:
+                        st.success("✅ No data drift detected")
+                    
+                    # Show model parameters
+                    with st.expander("Model Parameters"):
+                        st.json(results['parameters'])
+                else:
+                    st.error(f"No predictions found for model: {model_type}")
             except Exception as e:
-                st.error(f"Error refreshing predictions: {str(e)}")
+                st.error(f"Error running predictions: {str(e)}")
     
     elif view_type == "Individual Model Analysis":
         st.header("📊 Individual Model Analysis")
-        # Original functionality remains here
-
+        model_type = st.sidebar.selectbox(
+            "Select Model Type",
+            ["XGBoost", "Decision Tree", "LightGBM", "LSTM"]
+        )
+        
+        run_id = st.sidebar.text_input("Enter Run ID")
+        
+        if run_id:
+            try:
+                # Replace with logic to fetch specific run data
+                predictor = StockPredictor(bucket_name=bucket_name)
+                blob_path = f"model_outputs/{model_type.lower()}/{run_id}/results.json"
+                client = predictor.client
+                bucket = client.bucket(bucket_name)
+                blob = bucket.blob(blob_path)
+                
+                if blob.exists():
+                    results = json.loads(blob.download_as_string())
+                    st.subheader(f"Model Type: {results.get('model_type', model_type)}")
+                    st.text(f"Training Time: {results['timestamp']}")
+                    
+                    # Display metrics
+                    st.header("Model Performance Metrics")
+                    metrics = results['metrics']
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("MSE", f"{metrics['mse']:.2f}")
+                    with col2:
+                        st.metric("RMSE", f"{metrics['rmse']:.2f}")
+                    with col3:
+                        st.metric("R²", f"{metrics['r2']:.2f}")
+                    with col4:
+                        st.metric("MAE", f"{metrics['mae']:.2f}")
+                    
+                    # Predictions plot
+                    st.header("Model Predictions")
+                    plot_predictions(results)
+                    
+                    # Feature importance (for tree-based models)
+                    if model_type.lower() in ["xgboost", "decision_tree", "lightgbm"]:
+                        st.header("Feature Importance")
+                        feature_importance = pd.DataFrame({
+                            "Feature": results['feature_names'],
+                            "Importance": results['feature_importance']
+                        }).sort_values(by="Importance", ascending=False)
+                        st.bar_chart(feature_importance.set_index("Feature"))
+                    
+                    # Model parameters
+                    with st.expander("Model Parameters"):
+                        st.json(results['parameters'])
+                else:
+                    st.error(f"Results not found for Run ID: {run_id}")
+            except Exception as e:
+                st.error(f"Error fetching model analysis: {str(e)}")
+        else:
+            st.info("👈 Please enter a Run ID in the sidebar to view results")
+    
     elif view_type == "Model Comparison":
-        st.header("📈 Model Comparison")
-        # Original functionality remains here
+        st.header("📈 Model Performance Comparison")
+        # Logic to fetch and display comparison data
+        st.info("Model comparison is under development.")
 
 if __name__ == "__main__":
     main()
