@@ -14,4 +14,4 @@ This project provides a comprehensive stock prediction system with:
 └── data/           # Data handling and storage
 ```
 
-You can try this on [Link Text](https://masb-dashboard.streamlit.app/)
+You can try this on [this dashboard](https://masb-dashboard.streamlit.app/)
