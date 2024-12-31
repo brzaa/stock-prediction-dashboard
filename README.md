@@ -12,5 +12,6 @@ This project provides a comprehensive stock prediction system with:
 ├── training/        # Training scripts
 ├── dashboard/       # Streamlit dashboard
 └── data/           # Data handling and storage
+```
 
-You can try this in https://masb-dashboard.streamlit.app/
+You can try this on [Link Text](https://masb-dashboard.streamlit.app/)
