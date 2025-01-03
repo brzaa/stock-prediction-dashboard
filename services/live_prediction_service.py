@@ -226,30 +226,49 @@ class StockPredictor:
         return model, params
 
     def train_lstm(self, X_train, y_train):
-        """Train LSTM model"""
-        logger.info("Training LSTM model...")
+        """Train LSTM model with improved configuration"""
+        logger.info("Training LSTM model with enhanced configuration...")
         input_shape = (X_train.shape[1], X_train.shape[2])
-        # Reduced epochs and increased batch size for testing
+        
         params = {
-            "lstm_units_1": 64,
-            "lstm_units_2": 32,
-            "dropout_rate": 0.2,
-            "learning_rate": 0.001,
-            "epochs": 10,  # Reduced from 50
-            "batch_size": 64  # Increased from 32
+            "lstm_units_1": 128,  # Increased units
+            "lstm_units_2": 64,   # Additional layer
+            "dropout_rate": 0.3,  # Increased dropout
+            "learning_rate": 0.0005,  # Adjusted learning rate
+            "epochs": 50,  # Increased epochs
+            "batch_size": 32,  # Reduced batch size
+            "validation_split": 0.1  # Validation split
         }
         
         model = Sequential([
             Input(shape=input_shape),
-            LSTM(params["lstm_units_1"], return_sequences=True),
+            LSTM(params["lstm_units_1"], return_sequences=True, recurrent_dropout=0.2, kernel_regularizer='l2'),
             Dropout(params["dropout_rate"]),
-            LSTM(params["lstm_units_2"]),
+            LSTM(params["lstm_units_2"], recurrent_dropout=0.2, kernel_regularizer='l2'),
             Dropout(params["dropout_rate"]),
+            Dense(32, activation='relu'),  # Additional dense layer
             Dense(1)
         ])
         
-        model.compile(optimizer=Adam(learning_rate=params["learning_rate"]), loss='mse')
-        model.fit(X_train, y_train, epochs=params["epochs"], batch_size=params["batch_size"], verbose=1)
+        model.compile(
+            optimizer=Adam(learning_rate=params["learning_rate"]),
+            loss='huber'  # Use Huber loss for robustness to outliers
+        )
+        
+        callbacks = [
+            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
+            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
+        ]
+        
+        model.fit(
+            X_train, y_train,
+            epochs=params["epochs"],
+            batch_size=params["batch_size"],
+            validation_split=params["validation_split"],
+            callbacks=callbacks,
+            verbose=1
+        )
+        
         logger.info("LSTM training completed")
         return model, params
 
