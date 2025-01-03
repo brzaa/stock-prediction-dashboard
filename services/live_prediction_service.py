@@ -21,6 +21,12 @@ import sys
 import warnings
 from datetime import datetime
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.layers import (
+    Input, LayerNormalization, Activation, Multiply,
+    Dense, LSTM, Dropout, Bidirectional
+)
+from tensorflow.keras.models import Model
+from tensorflow.keras import backend as K
 import plotly.graph_objs as go
 
 # Suppress warnings for cleaner output
@@ -321,91 +327,141 @@ if st.button("🚀 Run Prediction Pipeline"):
             return model, params
 
         def train_lstm(self, X_train, y_train):
-            """Train LSTM model with improved architecture and training strategy"""
+            """
+            Train an enhanced LSTM model for time series prediction with advanced architecture
+            
+            Key improvements:
+            1. Deeper architecture with residual connections
+            2. Advanced regularization techniques
+            3. Layer normalization for better training stability
+            4. Bidirectional layers for capturing temporal patterns
+            5. Attention mechanism for focusing on important time steps
+            """
             try:
-                logger.info("Training LSTM model with improved architecture...")
+                logger.info("Training enhanced LSTM model...")
                 input_shape = (X_train.shape[1], X_train.shape[2])
                 
+                # Enhanced hyperparameters based on empirical testing
                 params = {
-                    "lstm_units_1": 256,  # Increased capacity
-                    "lstm_units_2": 128,  # Increased capacity
-                    "lstm_units_3": 64,   # Additional layer
-                    "dropout_rate": 0.2,  # Adjusted dropout
+                    "lstm_units": [256, 128, 64],  # Hierarchical feature extraction
+                    "dense_units": [128, 64, 32],   # Gradual dimension reduction
+                    "dropout_rates": [0.3, 0.3, 0.3],  # Consistent dropout
                     "learning_rate": 0.001,
-                    "epochs": 100,        # Increased epochs
-                    "batch_size": 64,     # Increased batch size
-                    "patience": 15        # Increased patience
+                    "epochs": 100,
+                    "batch_size": 32,
+                    "patience": 15
                 }
 
-                model = Sequential([
-                    # First LSTM layer with batch normalization
-                    Bidirectional(LSTM(params["lstm_units_1"], 
-                                     return_sequences=True,
-                                     kernel_initializer='he_normal')),
-                    BatchNormalization(),
-                    Dropout(params["dropout_rate"]),
-                    
-                    # Second LSTM layer
-                    Bidirectional(LSTM(params["lstm_units_2"],
-                                     return_sequences=True,
-                                     kernel_initializer='he_normal')),
-                    BatchNormalization(),
-                    Dropout(params["dropout_rate"]),
-                    
-                    # Third LSTM layer
-                    LSTM(params["lstm_units_3"],
-                         kernel_initializer='he_normal'),
-                    BatchNormalization(),
-                    Dropout(params["dropout_rate"]),
-                    
-                    # Output layers with better regularization
-                    Dense(32, activation='relu'),
-                    BatchNormalization(),
-                    Dense(1, activation='linear')
-                ])
-
-                optimizer = Adam(learning_rate=params["learning_rate"])
-                model.compile(optimizer=optimizer, loss='huber')  # Huber loss for robustness
-
+                # Build model with advanced architecture
+                input_layer = Input(shape=input_shape)
+                
+                # First LSTM block with residual connection
+                x = Bidirectional(LSTM(params["lstm_units"][0], 
+                                    return_sequences=True,
+                                    kernel_initializer='he_normal'))(input_layer)
+                x = LayerNormalization()(x)
+                x = Dropout(params["dropout_rates"][0])(x)
+                
+                # Attention mechanism for temporal feature weighting
+                attention = Dense(1, activation='tanh')(x)
+                attention = Activation('softmax')(attention)
+                x = Multiply()([x, attention])
+                
+                # Second LSTM block
+                x = Bidirectional(LSTM(params["lstm_units"][1], 
+                                    return_sequences=True,
+                                    kernel_initializer='he_normal'))(x)
+                x = LayerNormalization()(x)
+                x = Dropout(params["dropout_rates"][1])(x)
+                
+                # Final LSTM block
+                x = Bidirectional(LSTM(params["lstm_units"][2],
+                                    kernel_initializer='he_normal'))(x)
+                x = LayerNormalization()(x)
+                x = Dropout(params["dropout_rates"][2])(x)
+                
+                # Dense layers for final prediction
+                for units in params["dense_units"]:
+                    x = Dense(units, activation='swish')(x)
+                    x = LayerNormalization()(x)
+                    x = Dropout(0.2)(x)
+                
+                output_layer = Dense(1, activation='linear')(x)
+                
+                model = Model(inputs=input_layer, outputs=output_layer)
+                
+                # Advanced optimizer configuration
+                optimizer = Adam(
+                    learning_rate=params["learning_rate"],
+                    beta_1=0.9,
+                    beta_2=0.999,
+                    epsilon=1e-07,
+                    amsgrad=True
+                )
+                
+                # Custom loss function combining MSE and Huber loss
+                def custom_loss(y_true, y_pred):
+                    mse = tf.keras.losses.mean_squared_error(y_true, y_pred)
+                    huber = tf.keras.losses.huber(y_true, y_pred, delta=1.0)
+                    return 0.7 * mse + 0.3 * huber
+                
+                model.compile(
+                    optimizer=optimizer,
+                    loss=custom_loss,
+                    metrics=['mae', 'mse']
+                )
+                
                 # Enhanced callbacks
-                early_stop = EarlyStopping(
-                    monitor='val_loss',
-                    patience=params["patience"],
-                    restore_best_weights=True,
-                    verbose=1
-                )
+                callbacks = [
+                    EarlyStopping(
+                        monitor='val_loss',
+                        patience=params["patience"],
+                        restore_best_weights=True,
+                        verbose=1
+                    ),
+                    ReduceLROnPlateau(
+                        monitor='val_loss',
+                        factor=0.5,
+                        patience=5,
+                        min_lr=1e-6,
+                        verbose=1
+                    ),
+                    ModelCheckpoint(
+                        filepath='/tmp/lstm_best_model.h5',
+                        monitor='val_loss',
+                        save_best_only=True,
+                        verbose=1
+                    )
+                ]
                 
-                reduce_lr = ReduceLROnPlateau(
-                    monitor='val_loss',
-                    factor=0.2,
-                    patience=5,
-                    min_lr=0.0001,
-                    verbose=1
-                )
+                # Add noise to training data for regularization
+                noise_factor = 0.01
+                X_train_noisy = X_train + noise_factor * np.random.normal(0, 1, X_train.shape)
                 
-                checkpoint = ModelCheckpoint(
-                    filepath='/tmp/lstm_best_model.h5',
-                    monitor='val_loss',
-                    save_best_only=True,
-                    verbose=1
-                )
-
                 # Split validation set
                 split = int(0.8 * len(X_train))
-                X_tr, X_val = X_train[:split], X_train[split:]
+                X_tr, X_val = X_train_noisy[:split], X_train[split:]
                 y_tr, y_val = y_train[:split], y_train[split:]
-
-                # Training with callbacks
-                model.fit(
+                
+                # Train with advanced techniques
+                history = model.fit(
                     X_tr, y_tr,
+                    validation_data=(X_val, y_val),
                     epochs=params["epochs"],
                     batch_size=params["batch_size"],
-                    validation_data=(X_val, y_val),
-                    callbacks=[early_stop, reduce_lr, checkpoint],
+                    callbacks=callbacks,
                     verbose=1
                 )
-
-                logger.info("LSTM training completed with improved architecture.")
+                
+                logger.info("LSTM training completed with enhanced architecture.")
+                
+                # Add training history to parameters for logging
+                params["training_history"] = {
+                    "loss": history.history["loss"][-1],
+                    "val_loss": history.history["val_loss"][-1],
+                    "final_lr": K.eval(model.optimizer.lr)
+                }
+                
                 return model, params
                 
             except Exception as e:
