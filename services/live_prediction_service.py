@@ -1,193 +1,373 @@
 import os
-# TensorFlow and CUDA configuration (must be first)
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TF logging
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Disable GPU
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable OneDNN
-
-# Suppress tensorflow warnings
-import logging
-logging.getLogger('tensorflow').setLevel(logging.ERROR)
-
-import streamlit as st
-import tensorflow as tf
-from google.oauth2 import service_account
-from google.cloud import storage
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, mean_absolute_percentage_error
+from google.cloud import storage
+import logging
+import time
+from datetime import datetime
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 import xgboost as xgb
 from sklearn.tree import DecisionTreeRegressor
 from lightgbm import LGBMRegressor
-from datetime import datetime
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 import json
 import warnings
+from google.colab import auth
 warnings.filterwarnings('ignore')
 
-# Configure Streamlit page
-st.set_page_config(
-    page_title="Live Stock Prediction Service",
-    page_icon="📈",
-    layout="wide"
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
 )
+logger = logging.getLogger(__name__)
 
-def get_gcs_client():
-    """Initialize GCS client with credentials"""
-    credentials = service_account.Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"]
-    )
-    return storage.Client(credentials=credentials)
-
-def prepare_data(data):
-    """Prepare and engineer features"""
-    df = data.copy()
-    
-    # Technical indicators
-    df['SMA_5'] = df['close'].rolling(window=5).mean()
-    df['SMA_20'] = df['close'].rolling(window=20).mean()
-    df['Price_ROC'] = df['close'].pct_change(periods=5)
-    df['Volume_MA5'] = df['volume'].rolling(window=5).mean()
-    df['Volume_MA20'] = df['volume'].rolling(window=20).mean()
-    
-    # Drop NaN values
-    df.dropna(inplace=True)
-    
-    return df
-
-def train_and_save_model(model_name, model, X_train, X_test, y_train, y_test, 
-                        test_dates, feature_cols, bucket, progress_bar):
-    """Train model and save predictions"""
-    # Update progress
-    progress_bar.progress((list(MODELS.keys()).index(model_name) + 1) / len(MODELS))
-    st.text(f"Training {model_name} model...")
-    
-    # Train model
-    model.fit(X_train, y_train)
-    predictions = model.predict(X_test)
-    
-    # Calculate metrics
-    metrics = {
-        'mse': float(mean_squared_error(y_test, predictions)),
-        'rmse': float(np.sqrt(mean_squared_error(y_test, predictions))),
-        'r2': float(r2_score(y_test, predictions)),
-        'mae': float(mean_absolute_error(y_test, predictions)),
-        'mape': float(mean_absolute_percentage_error(y_test, predictions))
-    }
-    
-    # Prepare results
-    results = {
-        'timestamp': datetime.now().isoformat(),
-        'model_type': model_name,
-        'predictions': predictions.tolist(),
-        'actual_values': y_test.tolist(),
-        'dates': [str(date) for date in test_dates],
-        'metrics': metrics,
-        'feature_cols': feature_cols
-    }
-    
-    # Save to GCS
-    blob = bucket.blob(f'live_predictions/{model_name}/latest.json')
-    blob.upload_from_string(json.dumps(results, indent=2))
-    
-    # Display metrics
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric(f"{model_name.upper()} - MSE", f"{metrics['mse']:.2f}")
-    with col2:
-        st.metric(f"{model_name.upper()} - RMSE", f"{metrics['rmse']:.2f}")
-    with col3:
-        st.metric(f"{model_name.upper()} - R²", f"{metrics['r2']:.2f}")
-    with col4:
-        st.metric(f"{model_name.upper()} - MAE", f"{metrics['mae']:.2f}")
-
-# Define models
-MODELS = {
-    'xgboost': xgb.XGBRegressor(
-        objective="reg:squarederror",
-        max_depth=5,
-        learning_rate=0.01,
-        n_estimators=100,
-        random_state=42
-    ),
-    'decision_tree': DecisionTreeRegressor(
-        max_depth=10,
-        min_samples_split=20,
-        random_state=42
-    ),
-    'lightgbm': LGBMRegressor(
-        objective="regression",
-        max_depth=7,
-        learning_rate=0.05,
-        n_estimators=100,
-        random_state=42
-    )
-}
-
-def main():
-    st.title("🟢 Live Stock Prediction Service")
-    st.markdown("""
-    This service updates predictions for multiple models:
-    - XGBoost
-    - Decision Tree
-    - LightGBM
-    """)
-    
-    if st.button("🚀 Run Prediction Pipeline"):
+class StockPredictor:
+    def __init__(self, bucket_name="mlops-brza"):
+        """Initialize the StockPredictor with GCS bucket configuration"""
+        logger.info("Initializing StockPredictor...")
+        self.bucket_name = bucket_name
+        
+        # Authenticate with Google Cloud
         try:
-            # Initialize progress
-            progress_bar = st.progress(0)
-            status = st.empty()
+            logger.info("Authenticating with Google Cloud...")
+            auth.authenticate_user()
+            self.client = storage.Client()
+            self.bucket = self.client.bucket(bucket_name)
+            logger.info("Authentication successful")
+        except Exception as e:
+            logger.error(f"Authentication failed: {str(e)}")
+            raise
+        
+        self.scaler = StandardScaler()
+        self.time_steps = 5
+        
+        # Verify GCS connection
+        self._verify_gcs_connection()
+        
+        # Model configurations
+        self.data_prep_methods = {
+            'xgboost': self._prepare_tree_based_data,
+            'decision_tree': self._prepare_tree_based_data,
+            'lightgbm': self._prepare_tree_based_data,
+            'lstm': self._prepare_lstm_data
+        }
+        
+        self.models = {
+            'xgboost': self.train_xgboost,
+            'decision_tree': self.train_decision_tree,
+            'lightgbm': self.train_lightgbm,
+            'lstm': self.train_lstm
+        }
+
+    def _verify_gcs_connection(self):
+        """Verify connection to GCS and required folder structure"""
+        try:
+            logger.info(f"Verifying bucket {self.bucket_name} exists...")
+            if not self.bucket.exists():
+                raise Exception(f"Bucket {self.bucket_name} not found")
             
-            # Setup GCS client
-            status.text("Connecting to Google Cloud Storage...")
-            client = get_gcs_client()
-            bucket = client.bucket("mlops-brza")
+            required_folders = [
+                'stock_data/',
+                'live_predictions/xgboost/',
+                'live_predictions/lstm/',
+                'live_predictions/decision_tree/',
+                'live_predictions/lightgbm/'
+            ]
             
-            # Load data
-            status.text("Loading latest stock data...")
-            blob = bucket.blob('stock_data/MASB_latest.csv')
-            content = blob.download_as_string()
-            data = pd.read_csv(pd.io.common.BytesIO(content), parse_dates=['date'])
+            for folder in required_folders:
+                logger.info(f"Checking folder: {folder}")
+                blob = self.bucket.blob(folder)
+                if not blob.exists():
+                    logger.info(f"Creating folder: {folder}")
+                    blob.upload_from_string('')
+            
+            logger.info("GCS connection and folder structure verified")
+        except Exception as e:
+            logger.error(f"GCS verification failed: {str(e)}")
+            raise
+
+    def fetch_stock_data(self):
+        """Fetch stock data from GCS"""
+        try:
+            logger.info("Fetching stock data from GCS")
+            blob = self.bucket.blob('stock_data/MASB_latest.csv')
+            
+            if not blob.exists():
+                raise FileNotFoundError("Stock data file not found in GCS")
+            
+            logger.info("Downloading stock data file...")
+            local_file = '/tmp/MASB_latest.csv'
+            blob.download_to_filename(local_file)
+            
+            logger.info("Reading stock data into DataFrame...")
+            data = pd.read_csv(local_file, parse_dates=['date'])
             data.set_index('date', inplace=True)
             
-            # Prepare data
-            status.text("Preparing features...")
-            processed_data = prepare_data(data)
+            logger.info(f"Data loaded successfully. Shape: {data.shape}")
+            return data
+        except Exception as e:
+            logger.error(f"Error fetching stock data: {str(e)}")
+            raise
+
+    def _calculate_rsi(self, prices, period=14):
+        """Calculate RSI indicator"""
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def _prepare_tree_based_data(self, data, train_size=0.8):
+        """Prepare data for tree-based models"""
+        try:
+            logger.info("Preparing data for tree-based models...")
+            
+            # Calculate technical indicators
+            logger.info("Calculating technical indicators...")
+            data['SMA_5'] = data['close'].rolling(window=5).mean()
+            data['SMA_20'] = data['close'].rolling(window=20).mean()
+            data['RSI'] = self._calculate_rsi(data['close'])
+            
+            # Drop NaN values
+            original_length = len(data)
+            data.dropna(inplace=True)
+            logger.info(f"Dropped {original_length - len(data)} rows with NaN values")
             
             # Split data
-            train_size = int(len(processed_data) * 0.8)
-            feature_cols = ['SMA_5', 'SMA_20', 'Price_ROC', 'Volume_MA5', 'Volume_MA20', 'volume']
+            train_size = int(len(data) * train_size)
+            train_data = data[:train_size]
+            test_data = data[train_size:]
             
-            X = processed_data[feature_cols]
-            y = processed_data['close']
+            feature_cols = [col for col in data.columns if col != 'close']
+            X_train = train_data[feature_cols]
+            y_train = train_data['close']
+            X_test = test_data[feature_cols]
+            y_test = test_data['close']
             
             # Scale features
-            scaler = MinMaxScaler()
-            X_scaled = scaler.fit_transform(X)
+            logger.info("Scaling features...")
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            X_test_scaled = self.scaler.transform(X_test)
             
-            X_train = X_scaled[:train_size]
-            X_test = X_scaled[train_size:]
-            y_train = y[:train_size]
-            y_test = y[train_size:]
-            test_dates = processed_data.index[train_size:]
-            
-            # Train and save each model
-            for model_name, model in MODELS.items():
-                train_and_save_model(
-                    model_name, model, 
-                    X_train, X_test, 
-                    y_train, y_test, 
-                    test_dates, feature_cols,
-                    bucket, progress_bar
-                )
-            
-            # Complete
-            progress_bar.progress(1.0)
-            status.success("✅ All models trained and predictions updated successfully!")
-            
+            logger.info(f"Data preparation completed. Training set shape: {X_train_scaled.shape}")
+            return X_train_scaled, X_test_scaled, y_train, y_test, test_data.index, feature_cols
         except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-            raise e
+            logger.error(f"Error in data preparation: {str(e)}")
+            raise
+
+    def _prepare_lstm_data(self, data, train_size=0.8):
+        """Prepare data specifically for LSTM"""
+        try:
+            logger.info("Preparing data for LSTM...")
+            X_train_scaled, X_test_scaled, y_train, y_test, test_dates, feature_cols = self._prepare_tree_based_data(data, train_size)
+            
+            logger.info("Creating sequences for LSTM...")
+            def create_sequences(X, y):
+                Xs, ys = [], []
+                for i in range(len(X) - self.time_steps):
+                    Xs.append(X[i:(i + self.time_steps)])
+                    ys.append(y.iloc[i + self.time_steps] if isinstance(y, pd.Series) else y[i + self.time_steps])
+                return np.array(Xs), np.array(ys)
+            
+            X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train)
+            X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test)
+            
+            logger.info(f"LSTM data preparation completed. Training sequence shape: {X_train_seq.shape}")
+            return X_train_seq, X_test_seq, y_train_seq, y_test_seq, test_dates[self.time_steps:], feature_cols
+        except Exception as e:
+            logger.error(f"Error preparing LSTM data: {str(e)}")
+            raise
+
+    def train_xgboost(self, X_train, y_train):
+        """Train XGBoost model"""
+        logger.info("Training XGBoost model...")
+        params = {
+            "objective": "reg:squarederror",
+            "max_depth": 5,
+            "learning_rate": 0.01,
+            "n_estimators": 100
+        }
+        model = xgb.XGBRegressor(**params)
+        model.fit(X_train, y_train)
+        logger.info("XGBoost training completed")
+        return model, params
+
+    def train_decision_tree(self, X_train, y_train):
+        """Train Decision Tree model"""
+        logger.info("Training Decision Tree model...")
+        params = {
+            "max_depth": 10,
+            "min_samples_split": 20,
+            "min_samples_leaf": 10,
+            "random_state": 42
+        }
+        model = DecisionTreeRegressor(**params)
+        model.fit(X_train, y_train)
+        logger.info("Decision Tree training completed")
+        return model, params
+
+    def train_lightgbm(self, X_train, y_train):
+        """Train LightGBM model"""
+        logger.info("Training LightGBM model...")
+        params = {
+            "objective": "regression",
+            "max_depth": 7,
+            "learning_rate": 0.05,
+            "n_estimators": 100,
+            "num_leaves": 31
+        }
+        model = LGBMRegressor(**params)
+        model.fit(X_train, y_train)
+        logger.info("LightGBM training completed")
+        return model, params
+
+    def train_lstm(self, X_train, y_train):
+        """Train LSTM model with improved architecture"""
+        logger.info("Training LSTM model with enhanced configuration...")
+        input_shape = (X_train.shape[1], X_train.shape[2])
+        
+        params = {
+            "lstm_units_1": 128,
+            "lstm_units_2": 64,
+            "lstm_units_3": 32,
+            "dropout_rate": 0.3,
+            "recurrent_dropout": 0.2,
+            "learning_rate": 0.0005,
+            "epochs": 50,
+            "batch_size": 32,
+            "validation_split": 0.1
+        }
+        
+        model = Sequential([
+            Input(shape=input_shape),
+            LSTM(params["lstm_units_1"], 
+                 return_sequences=True, 
+                 recurrent_dropout=params["recurrent_dropout"],
+                 kernel_regularizer='l2'),
+            Dropout(params["dropout_rate"]),
+            LSTM(params["lstm_units_2"], 
+                 return_sequences=True,
+                 recurrent_dropout=params["recurrent_dropout"],
+                 kernel_regularizer='l2'),
+            Dropout(params["dropout_rate"]),
+            LSTM(params["lstm_units_3"],
+                 recurrent_dropout=params["recurrent_dropout"],
+                 kernel_regularizer='l2'),
+            Dropout(params["dropout_rate"]),
+            Dense(32, activation='relu'),
+            Dense(1)
+        ])
+        
+        model.compile(
+            optimizer=Adam(learning_rate=params["learning_rate"]),
+            loss='huber_loss'
+        )
+        
+        callbacks = [
+            EarlyStopping(
+                monitor='val_loss',
+                patience=10,
+                restore_best_weights=True
+            ),
+            ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.5,
+                patience=5,
+                min_lr=1e-6
+            )
+        ]
+        
+        model.fit(
+            X_train, y_train,
+            epochs=params["epochs"],
+            batch_size=params["batch_size"],
+            validation_split=params["validation_split"],
+            callbacks=callbacks,
+            verbose=1
+        )
+        
+        logger.info("LSTM training completed")
+        return model, params
+
+    def predict_model(self, model, X_test, model_type):
+        """Make predictions based on model type"""
+        logger.info(f"Making predictions with {model_type} model...")
+        return model.predict(X_test, verbose=0).flatten() if model_type == 'lstm' else model.predict(X_test)
+
+    def save_predictions(self, results, model_type):
+        """Save prediction results to GCS"""
+        logger.info(f"Saving predictions for {model_type}...")
+        blob = self.bucket.blob(f'live_predictions/{model_type}/latest.json')
+        blob.upload_from_string(json.dumps(results), content_type='application/json')
+        logger.info(f"Predictions saved for {model_type}")
+
+    def run_predictions(self):
+        """Run predictions for all models"""
+        logger.info("Starting prediction pipeline...")
+        data = self.fetch_stock_data()
+        
+        for model_type in self.models:
+            try:
+                logger.info(f"\n{'='*50}\nProcessing {model_type} model\n{'='*50}")
+                prepare_data = self.data_prep_methods[model_type]
+                
+                # Prepare data
+                if model_type == 'lstm':
+                    X_train, X_test, y_train, y_test, test_dates, feature_cols = prepare_data(data)
+                else:
+                    X_train, X_test, y_train, y_test, test_dates, feature_cols = prepare_data(data)
+                
+                # Train model and make predictions
+                model, params = self.models[model_type](X_train, y_train)
+                predictions = self.predict_model(model, X_test, model_type)
+                
+                # Calculate metrics
+                metrics = {
+                    'mse': mean_squared_error(y_test, predictions),
+                    'rmse': np.sqrt(mean_squared_error(y_test, predictions)),
+                    'r2': r2_score(y_test, predictions),
+                    'mae': mean_absolute_error(y_test, predictions)
+                }
+                
+                # Prepare results
+                results = {
+                    'timestamp': datetime.now().isoformat(),
+                    'model_type': model_type,
+                    'predictions': predictions.tolist(),
+                    'actual_values': y_test.tolist(),
+                    'metrics': metrics,
+                    'parameters': params
+                }
+                
+                # Save results
+                self.save_predictions(results, model_type)
+                
+            except Exception as e:
+                logger.error(f"Error processing {model_type}: {str(e)}")
+                continue
 
 if __name__ == "__main__":
-    main()
+    try:
+        logger.info("="*50)
+        logger.info("Starting Stock Prediction Service")
+        logger.info("="*50)
+        
+        # Initialize and run predictor
+        predictor = StockPredictor()
+        predictor.run_predictions()
+        
+        logger.info("="*50)
+        logger.info("Stock Prediction Service Completed Successfully")
+        logger.info("="*50)
+        
+    except Exception as e:
+        logger.error(f"Fatal error occurred: {str(e)}")
+        raise
