@@ -51,7 +51,10 @@ def load_model_results(bucket_name: str, run_id: str) -> dict:
               for model_type in MODEL_TYPES.values()]
         ]
         
+        st.info(f"Checking paths for Run ID: {run_id}")  # Debug info
+        
         for path in paths:
+            st.info(f"Checking path: {path}")  # Debug info
             blob = bucket.blob(path)
             if blob.exists():
                 st.success(f"Found results at: {path}")
