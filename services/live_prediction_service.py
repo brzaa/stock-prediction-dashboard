@@ -28,10 +28,7 @@ from tensorflow.keras import backend as K
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 import json
 import logging
-import sys
-import warnings
 from datetime import datetime
-import plotly.graph_objs as go
 import uuid
 
 # Memory cleanup function
@@ -49,42 +46,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Suppress warnings
-warnings.filterwarnings('ignore')
+# Create a placeholder for logs
+log_container = st.empty()
+log_output = []
 
-# Custom Streamlit logging handler
-class StreamlitHandler(logging.Handler):
-    """Custom logging handler to display logs in Streamlit."""
-    def __init__(self, write_func):
-        super().__init__()
-        self.write_func = write_func
-
-    def emit(self, record):
-        log_entry = self.format(record)
-        self.write_func(log_entry)
-
-def initialize_logging():
-    """Initialize logging configuration"""
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    
-    # Remove any existing handlers
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    
-    # Create streamlit handler
-    log_placeholder = st.empty()
-    streamlit_handler = StreamlitHandler(
-        lambda msg: log_placeholder.text(log_placeholder.text() + msg + "\n")
-    )
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    streamlit_handler.setFormatter(formatter)
-    logger.addHandler(streamlit_handler)
-    
-    return logger, log_placeholder
-
-# Initialize logger
-logger, log_placeholder = initialize_logging()
+def log_message(message):
+    """Log message to both streamlit and list"""
+    log_output.append(message)
+    log_container.text('\n'.join(log_output))
 
 @st.cache_resource
 def get_gcs_client():
@@ -93,15 +62,19 @@ def get_gcs_client():
         credentials = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"]
         )
-        return storage.Client(credentials=credentials, project=credentials.project_id)
+        client = storage.Client(credentials=credentials)
+        log_message("Successfully created GCS client")
+        return client
     except Exception as e:
-        st.error(f"Error initializing GCS client: {str(e)}")
+        error_msg = f"Error initializing GCS client: {str(e)}"
+        log_message(error_msg)
+        st.error(error_msg)
         return None
 
 class StockPredictor:
     def __init__(self, bucket):
         """Initialize the StockPredictor with GCS bucket configuration"""
-        logger.info("Initializing StockPredictor...")
+        log_message("Initializing StockPredictor...")
         self.bucket = bucket
         self.scaler = MinMaxScaler()
         self.time_steps = 20
@@ -110,9 +83,6 @@ class StockPredictor:
         # Clean memory before initializing
         clean_memory()
         
-        # Verify GCS connection
-        self._verify_gcs_connection()
-
         # Model configurations
         self.data_prep_methods = {
             'xgboost': self._prepare_tree_based_data,
@@ -131,7 +101,7 @@ class StockPredictor:
     def _verify_gcs_connection(self):
         """Verify connection to GCS and required folder structure"""
         try:
-            logger.info(f"Verifying bucket '{self.bucket.name}' exists...")
+            log_message(f"Verifying bucket '{self.bucket.name}' exists...")
             if not self.bucket.exists():
                 raise Exception(f"Bucket '{self.bucket.name}' not found.")
 
@@ -140,33 +110,27 @@ class StockPredictor:
                 'live_predictions/xgboost/',
                 'live_predictions/lstm/',
                 'live_predictions/decision_tree/',
-                'live_predictions/lightgbm/'
+                'live_predictions/lightgbm/',
+                'model_outputs/'
             ]
 
             for folder in required_folders:
-                logger.info(f"Checking folder: {folder}")
+                log_message(f"Checking folder: {folder}")
                 blob = self.bucket.blob(folder)
                 if not blob.exists():
-                    logger.info(f"Creating folder: {folder}")
+                    log_message(f"Creating folder: {folder}")
                     blob.upload_from_string('')
 
-            logger.info("GCS connection and folder structure verified.")
+            log_message("GCS connection and folder structure verified.")
         except Exception as e:
-            logger.error(f"GCS verification failed: {str(e)}")
-            raise
-
-    def _calculate_rsi(self, prices, period=14):
-        """Calculate RSI indicator"""
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
+            error_msg = f"GCS verification failed: {str(e)}"
+            log_message(error_msg)
+            raise Exception(error_msg)
 
     def fetch_stock_data(self):
         """Fetch stock data from GCS"""
         try:
-            logger.info("Fetching stock data from GCS...")
+            log_message("Fetching stock data from GCS...")
             blob = self.bucket.blob('stock_data/MASB_latest.csv')
 
             if not blob.exists():
@@ -179,17 +143,26 @@ class StockPredictor:
                 parse_dates=['date']
             )
             data.set_index('date', inplace=True)
-            logger.info(f"Data loaded successfully. Shape: {data.shape}")
+            log_message(f"Data loaded successfully. Shape: {data.shape}")
             return data
             
         except Exception as e:
-            logger.error(f"Error fetching stock data: {str(e)}")
-            raise
+            error_msg = f"Error fetching stock data: {str(e)}"
+            log_message(error_msg)
+            raise Exception(error_msg)
+
+    def _calculate_rsi(self, prices, period=14):
+        """Calculate RSI indicator"""
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
 
     def _prepare_tree_based_data(self, data, train_size=0.8):
         """Prepare data for tree-based models with enhanced feature engineering"""
         try:
-            logger.info("Preparing data for tree-based models...")
+            log_message("Preparing data for tree-based models...")
             
             # Technical indicators
             data['SMA_5'] = data['close'].rolling(window=5).mean()
@@ -230,17 +203,18 @@ class StockPredictor:
             X_train_scaled = self.scaler.fit_transform(X_train)
             X_test_scaled = self.scaler.transform(X_test)
             
-            logger.info(f"Data preparation completed. Training set shape: {X_train_scaled.shape}")
+            log_message(f"Data preparation completed. Training set shape: {X_train_scaled.shape}")
             return X_train_scaled, X_test_scaled, y_train, y_test, test_data.index, feature_cols
             
         except Exception as e:
-            logger.error(f"Error in data preparation: {str(e)}")
-            raise
+            error_msg = f"Error in data preparation: {str(e)}"
+            log_message(error_msg)
+            raise Exception(error_msg)
 
     def _prepare_lstm_data(self, data, train_size=0.8):
         """Prepare data for LSTM with enhanced feature engineering"""
         try:
-            logger.info("Preparing data for LSTM...")
+            log_message("Preparing data for LSTM...")
             
             # Get base features and add LSTM-specific ones
             data['Volume_MA5'] = data['volume'].rolling(window=5).mean()
@@ -268,16 +242,17 @@ class StockPredictor:
             X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train)
             X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test)
             
-            logger.info(f"LSTM data preparation completed. Sequence shape: {X_train_seq.shape}")
+            log_message(f"LSTM data preparation completed. Sequence shape: {X_train_seq.shape}")
             return X_train_seq, X_test_seq, y_train_seq, y_test_seq, test_dates[self.time_steps:], feature_cols
             
         except Exception as e:
-            logger.error(f"Error preparing LSTM data: {str(e)}")
-            raise
+            error_msg = f"Error preparing LSTM data: {str(e)}"
+            log_message(error_msg)
+            raise Exception(error_msg)
 
     def train_xgboost(self, X_train, y_train):
         """Train XGBoost model with optimized parameters"""
-        logger.info("Training XGBoost model...")
+        log_message("Training XGBoost model...")
         params = {
             "objective": "reg:squarederror",
             "max_depth": 5,
@@ -289,12 +264,12 @@ class StockPredictor:
         }
         model = xgb.XGBRegressor(**params)
         model.fit(X_train, y_train)
-        logger.info("XGBoost training completed.")
+        log_message("XGBoost training completed.")
         return model, params
 
     def train_decision_tree(self, X_train, y_train):
         """Train Decision Tree model"""
-        logger.info("Training Decision Tree model...")
+        log_message("Training Decision Tree model...")
         params = {
             "max_depth": 10,
             "min_samples_split": 20,
@@ -303,12 +278,12 @@ class StockPredictor:
         }
         model = DecisionTreeRegressor(**params)
         model.fit(X_train, y_train)
-        logger.info("Decision Tree training completed.")
+        log_message("Decision Tree training completed.")
         return model, params
 
     def train_lightgbm(self, X_train, y_train):
         """Train LightGBM model"""
-        logger.info("Training LightGBM model...")
+        log_message("Training LightGBM model...")
         params = {
             "objective": "regression",
             "max_depth": 7,
@@ -319,13 +294,13 @@ class StockPredictor:
         }
         model = LGBMRegressor(**params)
         model.fit(X_train, y_train)
-        logger.info("LightGBM training completed.")
+        log_message("LightGBM training completed.")
         return model, params
 
     def train_lstm(self, X_train, y_train):
         """Train enhanced LSTM model with advanced architecture"""
         try:
-            logger.info("Training enhanced LSTM model...")
+            log_message("Training enhanced LSTM model...")
             input_shape = (X_train.shape[1], X_train.shape[2])
             
             # Clean memory before training
@@ -435,7 +410,7 @@ class StockPredictor:
                 verbose=1
             )
             
-            logger.info("LSTM training completed successfully.")
+            log_message("LSTM training completed successfully.")
             
             # Add training history to parameters
             params["training_history"] = {
@@ -447,12 +422,13 @@ class StockPredictor:
             return model, params
             
         except Exception as e:
-            logger.error(f"Error training LSTM model: {str(e)}")
-            raise
+            error_msg = f"Error training LSTM model: {str(e)}"
+            log_message(error_msg)
+            raise Exception(error_msg)
 
     def predict_model(self, model, X_test, model_type):
         """Make predictions with specified model"""
-        logger.info(f"Making predictions with {model_type} model...")
+        log_message(f"Making predictions with {model_type} model...")
         try:
             if model_type == 'lstm':
                 predictions = model.predict(X_test, verbose=0).flatten()
@@ -460,20 +436,18 @@ class StockPredictor:
                 predictions = model.predict(X_test)
             return predictions
         except Exception as e:
-            logger.error(f"Error making predictions: {str(e)}")
-            raise
+            error_msg = f"Error making predictions: {str(e)}"
+            log_message(error_msg)
+            raise Exception(error_msg)
 
     def save_predictions(self, results, model_type):
         """Save prediction results to GCS"""
         try:
-            logger.info(f"Saving predictions for {model_type} model...")
+            log_message(f"Saving predictions for {model_type} model...")
             
             # Add run_id and timestamp to results
             results['run_id'] = self.run_id
             results['timestamp'] = datetime.now().isoformat()
-            
-            # Save to live predictions
-            live_blob = self.bucket.blob(f'live_predictions/{model_type}/latest.json')
             
             # Ensure all numpy types are converted to Python native types
             def convert_to_native(obj):
@@ -491,7 +465,8 @@ class StockPredictor:
                 for key, value in results.items()
             }
             
-            # Save to both locations
+            # Save to live predictions
+            live_blob = self.bucket.blob(f'live_predictions/{model_type}/latest.json')
             live_blob.upload_from_string(
                 json.dumps(processed_results, indent=2),
                 content_type='application/json'
@@ -504,27 +479,29 @@ class StockPredictor:
                 content_type='application/json'
             )
             
-            logger.info(f"Predictions saved for {model_type} model.")
+            log_message(f"Predictions saved for {model_type} model.")
             
         except Exception as e:
-            logger.error(f"Failed to save predictions: {str(e)}")
-            raise
+            error_msg = f"Failed to save predictions: {str(e)}"
+            log_message(error_msg)
+            raise Exception(error_msg)
 
     def run_predictions(self):
         """Run predictions for all models"""
         try:
-            logger.info("Starting prediction pipeline...")
+            log_message("Starting prediction pipeline...")
             data = self.fetch_stock_data()
+
+            self._verify_gcs_connection()  # Verify GCS connection before starting predictions
 
             for model_type in self.models:
                 try:
-                    logger.info(f"\n{'='*50}\nProcessing {model_type} model\n{'='*50}")
+                    log_message(f"\n{'='*50}\nProcessing {model_type} model\n{'='*50}")
                     prepare_data = self.data_prep_methods[model_type]
 
                     # Prepare data
                     if model_type == 'lstm':
                         X_train, X_test, y_train, y_test, test_dates, feature_cols = prepare_data(data)
-                        # Clean memory before LSTM training
                         clean_memory()
                     else:
                         X_train, X_test, y_train, y_test, test_dates, feature_cols = prepare_data(data)
@@ -542,6 +519,10 @@ class StockPredictor:
                         'mape': float(mean_absolute_percentage_error(y_test, predictions))
                     }
 
+                    # Display metrics in Streamlit
+                    st.subheader(f"📊 {model_type.capitalize()} Model Metrics")
+                    st.json(metrics)
+
                     # Prepare results
                     results = {
                         'model_type': model_type,
@@ -549,59 +530,31 @@ class StockPredictor:
                         'actual_values': y_test.tolist() if isinstance(y_test, np.ndarray) else y_test,
                         'dates': [str(date) for date in test_dates],
                         'metrics': metrics,
-                        'parameters': params
+                        'parameters': params,
+                        'feature_cols': feature_cols
                     }
 
                     # Save results
                     self.save_predictions(results, model_type)
-
-                    # Display metrics in Streamlit
-                    st.subheader(f"📊 {model_type.capitalize()} Model Metrics")
-                    st.json(metrics)
-
-                    # Visualize predictions
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=test_dates,
-                        y=y_test,
-                        mode='lines',
-                        name='Actual',
-                        line=dict(color='blue', width=2)
-                    ))
-                    fig.add_trace(go.Scatter(
-                        x=test_dates,
-                        y=predictions,
-                        mode='lines',
-                        name='Predicted',
-                        line=dict(color='red', width=2)
-                    ))
-                    fig.update_layout(
-                        title=f"Actual vs Predicted for {model_type.capitalize()} Model",
-                        xaxis_title='Date',
-                        yaxis_title='Price',
-                        legend=dict(x=0, y=1),
-                        template='plotly_dark'
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    logger.info(f"{model_type.capitalize()} Model Metrics: {metrics}")
 
                     # Clean up after each model
                     if model_type == 'lstm':
                         clean_memory()
 
                 except Exception as e:
-                    logger.error(f"Error processing {model_type} model: {str(e)}")
-                    st.error(f"❌ Error processing {model_type} model. Check the logs for more details.")
+                    error_msg = f"Error processing {model_type} model: {str(e)}"
+                    log_message(error_msg)
+                    st.error(f"❌ Error processing {model_type} model. Check the logs for details.")
                     continue
 
-            logger.info("Prediction pipeline completed successfully.")
-            st.success("✅ Prediction pipeline completed successfully.")
+            log_message("Prediction pipeline completed successfully.")
+            st.success("✅ Prediction pipeline completed successfully!")
 
         except Exception as e:
-            logger.error(f"Prediction pipeline failed: {str(e)}")
-            st.error("❌ Prediction pipeline failed. Check the logs for more details.")
-            raise
+            error_msg = f"Prediction pipeline failed: {str(e)}"
+            log_message(error_msg)
+            st.error("❌ Prediction pipeline failed. Check the logs for details.")
+            raise Exception(error_msg)
 
 def main():
     st.title("🟢 Live Stock Prediction Service")
@@ -615,11 +568,20 @@ def main():
     Each model's predictions and metrics will be saved to Google Cloud Storage.
     """)
     
+    with st.expander("Service Information", expanded=True):
+        st.info("""
+        This service will:
+        1. Fetch the latest stock data from GCS
+        2. Train multiple models on the data
+        3. Generate predictions and calculate metrics
+        4. Save results to GCS for dashboard visualization
+        """)
+    
     try:
         # Get GCS client
         client = get_gcs_client()
-        if not client:
-            st.error("Failed to initialize Google Cloud client")
+        if client is None:
+            st.error("Failed to initialize Google Cloud client. Check your credentials.")
             st.stop()
             
         # Get bucket
@@ -631,8 +593,9 @@ def main():
                 predictor.run_predictions()
                 
     except Exception as e:
-        st.error(f"Fatal error occurred: {str(e)}")
-        logger.error(f"Fatal error occurred: {str(e)}")
+        error_msg = f"Fatal error occurred: {str(e)}"
+        log_message(error_msg)
+        st.error(error_msg)
     finally:
         clean_memory()
 
