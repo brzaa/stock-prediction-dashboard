@@ -13,6 +13,7 @@ from lightgbm import LGBMRegressor
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau  # Import callbacks
 import json
 import warnings
 from google.colab import auth
