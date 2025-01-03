@@ -14,6 +14,8 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, BatchNormalization, Input
 from tensorflow.keras.optimizers import Adam
 import json
+import os
+import tensorflow as tf
 import logging
 import sys
 import warnings
@@ -38,6 +40,8 @@ class StreamlitHandler(logging.Handler):
 # Initialize logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
 # Create a placeholder for logs
 log_placeholder = st.empty()
