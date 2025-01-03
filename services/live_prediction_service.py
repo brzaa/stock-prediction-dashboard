@@ -99,6 +99,7 @@ This application fetches stock data from Google Cloud Storage (GCS), trains mult
 6. **Save** predictions back to GCS.
 7. **Display** metrics and logs.
 """)
+
 # Button to Run Prediction Pipeline
 if st.button("🚀 Run Prediction Pipeline"):
     with st.spinner('Initializing Stock Prediction Service...'):
@@ -199,64 +200,65 @@ if st.button("🚀 Run Prediction Pipeline"):
             except Exception as e:
                 logger.error(f"Error fetching stock data: {str(e)}")
                 raise
-        def _calculate_rsi(self, prices, period=14):
-                    """Calculate RSI indicator"""
-                    delta = prices.diff()
-                    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-                    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-                    rs = gain / loss
-                    return 100 - (100 / (1 + rs))
 
-                def _prepare_tree_based_data(self, data, train_size=0.8):
-                    """Prepare data for tree-based models with enhanced feature engineering"""
-                    try:
-                        logger.info("Preparing data for tree-based models...")
-                        
-                        # Technical indicators
-                        data['SMA_5'] = data['close'].rolling(window=5).mean()
-                        data['SMA_20'] = data['close'].rolling(window=20).mean()
-                        data['RSI'] = self._calculate_rsi(data['close'])
-                        data['EMA_12'] = data['close'].ewm(span=12, adjust=False).mean()
-                        data['EMA_26'] = data['close'].ewm(span=26, adjust=False).mean()
-                        data['MACD'] = data['EMA_12'] - data['EMA_26']
-                        data['Signal_Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
-                        
-                        # Bollinger Bands
-                        data['BB_Middle'] = data['close'].rolling(window=20).mean()
-                        data['BB_Std'] = data['close'].rolling(window=20).std()
-                        data['BB_Upper'] = data['BB_Middle'] + (2 * data['BB_Std'])
-                        data['BB_Lower'] = data['BB_Middle'] - (2 * data['BB_Std'])
-                        
-                        # Additional Features
-                        data['Price_ROC'] = data['close'].pct_change(periods=5)
-                        data['Volume_ROC'] = data['volume'].pct_change(periods=5)
-                        data['Momentum'] = data['close'] - data['close'].shift(4)
-                        data['Volatility'] = data['close'].rolling(window=10).std()
-                        
-                        # Drop NaN values
-                        data.dropna(inplace=True)
-                        
-                        # Split data
-                        train_size = int(len(data) * train_size)
-                        train_data = data[:train_size]
-                        test_data = data[train_size:]
-                        
-                        feature_cols = [col for col in data.columns if col != 'close']
-                        X_train = train_data[feature_cols]
-                        y_train = train_data['close']
-                        X_test = test_data[feature_cols]
-                        y_test = test_data['close']
-                        
-                        # Scale features
-                        X_train_scaled = self.scaler.fit_transform(X_train)
-                        X_test_scaled = self.scaler.transform(X_test)
-                        
-                        logger.info(f"Data preparation completed. Training set shape: {X_train_scaled.shape}")
-                        return X_train_scaled, X_test_scaled, y_train, y_test, test_data.index, feature_cols
-                        
-                    except Exception as e:
-                        logger.error(f"Error in data preparation: {str(e)}")
-                        raise
+        def _calculate_rsi(self, prices, period=14):
+            """Calculate RSI indicator"""
+            delta = prices.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+            rs = gain / loss
+            return 100 - (100 / (1 + rs))
+
+        def _prepare_tree_based_data(self, data, train_size=0.8):
+            """Prepare data for tree-based models with enhanced feature engineering"""
+            try:
+                logger.info("Preparing data for tree-based models...")
+                
+                # Technical indicators
+                data['SMA_5'] = data['close'].rolling(window=5).mean()
+                data['SMA_20'] = data['close'].rolling(window=20).mean()
+                data['RSI'] = self._calculate_rsi(data['close'])
+                data['EMA_12'] = data['close'].ewm(span=12, adjust=False).mean()
+                data['EMA_26'] = data['close'].ewm(span=26, adjust=False).mean()
+                data['MACD'] = data['EMA_12'] - data['EMA_26']
+                data['Signal_Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
+                
+                # Bollinger Bands
+                data['BB_Middle'] = data['close'].rolling(window=20).mean()
+                data['BB_Std'] = data['close'].rolling(window=20).std()
+                data['BB_Upper'] = data['BB_Middle'] + (2 * data['BB_Std'])
+                data['BB_Lower'] = data['BB_Middle'] - (2 * data['BB_Std'])
+                
+                # Additional Features
+                data['Price_ROC'] = data['close'].pct_change(periods=5)
+                data['Volume_ROC'] = data['volume'].pct_change(periods=5)
+                data['Momentum'] = data['close'] - data['close'].shift(4)
+                data['Volatility'] = data['close'].rolling(window=10).std()
+                
+                # Drop NaN values
+                data.dropna(inplace=True)
+                
+                # Split data
+                train_size = int(len(data) * train_size)
+                train_data = data[:train_size]
+                test_data = data[train_size:]
+                
+                feature_cols = [col for col in data.columns if col != 'close']
+                X_train = train_data[feature_cols]
+                y_train = train_data['close']
+                X_test = test_data[feature_cols]
+                y_test = test_data['close']
+                
+                # Scale features
+                X_train_scaled = self.scaler.fit_transform(X_train)
+                X_test_scaled = self.scaler.transform(X_test)
+                
+                logger.info(f"Data preparation completed. Training set shape: {X_train_scaled.shape}")
+                return X_train_scaled, X_test_scaled, y_train, y_test, test_data.index, feature_cols
+                
+            except Exception as e:
+                logger.error(f"Error in data preparation: {str(e)}")
+                raise
 
         def _prepare_lstm_data(self, data, train_size=0.8):
             """Prepare data for LSTM with enhanced feature engineering"""
@@ -296,7 +298,7 @@ if st.button("🚀 Run Prediction Pipeline"):
                 logger.error(f"Error preparing LSTM data: {str(e)}")
                 raise
 
-def train_xgboost(self, X_train, y_train):
+        def train_xgboost(self, X_train, y_train):
             """Train XGBoost model with optimized parameters"""
             logger.info("Training XGBoost model...")
             params = {
@@ -354,7 +356,7 @@ def train_xgboost(self, X_train, y_train):
                 
                 params = {
                     "lstm_units": [256, 128, 64],
-                    "dense_units": [128, 64, 32],
+                    "dense_units": [128, 64,32],
                     "dropout_rates": [0.3, 0.3, 0.3],
                     "learning_rate": 0.001,
                     "epochs": 100,
@@ -420,7 +422,7 @@ def train_xgboost(self, X_train, y_train):
                     metrics=['mae', 'mse']
                 )
 
-# Callbacks
+                # Callbacks
                 callbacks = [
                     EarlyStopping(
                         monitor='val_loss',
@@ -522,7 +524,7 @@ def train_xgboost(self, X_train, y_train):
                 logger.error(f"Failed to save predictions: {str(e)}")
                 raise
 
-def run_predictions(self):
+        def run_predictions(self):
             """Run predictions for all models"""
             try:
                 logger.info("Starting prediction pipeline...")
