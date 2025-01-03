@@ -60,7 +60,7 @@ class StockPredictor:
             raise
         
         self.scaler = StandardScaler()
-        self.time_steps = 5  # Used for LSTM sequence length
+        self.time_steps = 1  # Single timestep for LSTM (aligned with other models)
         
         # Verify GCS connection
         self._verify_gcs_connection()
@@ -201,24 +201,17 @@ class StockPredictor:
             raise
 
     def _prepare_lstm_data(self, data, train_size=0.8):
-        """Prepare data specifically for LSTM"""
+        """Prepare data specifically for LSTM (aligned with tree-based models)"""
         try:
             logger.info("Preparing data for LSTM...")
             X_train_scaled, X_test_scaled, y_train, y_test, test_dates, feature_cols = self._prepare_tree_based_data(data, train_size)
             
-            logger.info("Creating sequences for LSTM...")
-            def create_sequences(X, y):
-                Xs, ys = [], []
-                for i in range(len(X) - self.time_steps):
-                    Xs.append(X[i:(i + self.time_steps)])
-                    ys.append(y.iloc[i + self.time_steps] if isinstance(y, pd.Series) else y[i + self.time_steps])
-                return np.array(Xs), np.array(ys)
-            
-            X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train)
-            X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test)
+            # Reshape for LSTM (samples, timesteps, features)
+            X_train_seq = X_train_scaled.reshape(X_train_scaled.shape[0], 1, X_train_scaled.shape[1])
+            X_test_seq = X_test_scaled.reshape(X_test_scaled.shape[0], 1, X_test_scaled.shape[1])
             
             logger.info(f"LSTM data preparation completed. Training sequence shape: {X_train_seq.shape}")
-            return X_train_seq, X_test_seq, y_train_seq, y_test_seq, test_dates[self.time_steps:], feature_cols
+            return X_train_seq, X_test_seq, y_train, y_test, test_dates, feature_cols
         except Exception as e:
             logger.error(f"Error preparing LSTM data: {str(e)}")
             raise
@@ -297,17 +290,14 @@ class StockPredictor:
         return model, params
 
     def train_lstm(self, X_train, y_train):
-        """Train LSTM model with improved architecture"""
-        logger.info("Training LSTM model with enhanced configuration...")
+        """Train LSTM model with simplified architecture"""
+        logger.info("Training LSTM model with simplified configuration...")
         input_shape = (X_train.shape[1], X_train.shape[2])
         
         params = {
-            "lstm_units_1": 128,
-            "lstm_units_2": 64,
-            "lstm_units_3": 32,
+            "lstm_units": 64,
             "dropout_rate": 0.3,
-            "recurrent_dropout": 0.2,
-            "learning_rate": 0.0005,
+            "learning_rate": 0.001,
             "epochs": 50,
             "batch_size": 32,
             "validation_split": 0.1
@@ -315,21 +305,8 @@ class StockPredictor:
         
         model = Sequential([
             Input(shape=input_shape),
-            LSTM(params["lstm_units_1"], 
-                 return_sequences=True, 
-                 recurrent_dropout=params["recurrent_dropout"],
-                 kernel_regularizer='l2'),
+            LSTM(params["lstm_units"], recurrent_dropout=0.2, kernel_regularizer='l2'),
             Dropout(params["dropout_rate"]),
-            LSTM(params["lstm_units_2"], 
-                 return_sequences=True,
-                 recurrent_dropout=params["recurrent_dropout"],
-                 kernel_regularizer='l2'),
-            Dropout(params["dropout_rate"]),
-            LSTM(params["lstm_units_3"],
-                 recurrent_dropout=params["recurrent_dropout"],
-                 kernel_regularizer='l2'),
-            Dropout(params["dropout_rate"]),
-            Dense(32, activation='relu'),
             Dense(1)
         ])
         
@@ -339,17 +316,8 @@ class StockPredictor:
         )
         
         callbacks = [
-            EarlyStopping(
-                monitor='val_loss',
-                patience=10,
-                restore_best_weights=True
-            ),
-            ReduceLROnPlateau(
-                monitor='val_loss',
-                factor=0.5,
-                patience=5,
-                min_lr=1e-6
-            )
+            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
+            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
         ]
         
         model.fit(
