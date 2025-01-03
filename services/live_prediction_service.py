@@ -1,4 +1,8 @@
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow logs
+import tensorflow as tf
+tf.get_logger().setLevel('ERROR')  # Suppress TensorFlow warnings
+
 import pandas as pd
 import numpy as np
 from google.cloud import storage
@@ -306,16 +310,16 @@ class StockPredictor:
             LSTM(params["lstm_units_1"], 
                  return_sequences=True, 
                  recurrent_dropout=params["recurrent_dropout"],
-                 kernel_regularizer='l2'),  # Fixed: Changed 'l2" to 'l2'
+                 kernel_regularizer='l2'),
             Dropout(params["dropout_rate"]),
             LSTM(params["lstm_units_2"], 
                  return_sequences=True,
                  recurrent_dropout=params["recurrent_dropout"],
-                 kernel_regularizer='l2'),  # Fixed: Changed 'l2" to 'l2'
+                 kernel_regularizer='l2'),
             Dropout(params["dropout_rate"]),
             LSTM(params["lstm_units_3"],
                  recurrent_dropout=params["recurrent_dropout"],
-                 kernel_regularizer='l2'),  # Fixed: Changed 'l2" to 'l2'
+                 kernel_regularizer='l2'),
             Dropout(params["dropout_rate"]),
             Dense(32, activation='relu'),
             Dense(1)
@@ -323,7 +327,7 @@ class StockPredictor:
         
         model.compile(
             optimizer=Adam(learning_rate=params["learning_rate"]),
-            loss='huber'  # Using 'huber' instead of 'huber_loss'
+            loss='huber'
         )
         
         callbacks = [
@@ -426,4 +430,11 @@ def main():
     
     if analysis_type == "Live Predictions":
         predictor = StockPredictor()
-        predictor.run_l
+        predictor.run_live_predictions(model_type, window_size=30, update_interval=60)
+    elif analysis_type == "Model Comparison":
+        display_model_comparison()
+    else:
+        display_historical_analysis(model_type)
+
+if __name__ == "__main__":
+    main()
