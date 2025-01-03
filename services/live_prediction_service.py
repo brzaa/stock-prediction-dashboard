@@ -1,8 +1,4 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow logs
-import tensorflow as tf
-tf.get_logger().setLevel('ERROR')  # Suppress TensorFlow warnings
-
 import pandas as pd
 import numpy as np
 from google.cloud import storage
@@ -17,14 +13,12 @@ from lightgbm import LGBMRegressor
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 import json
 import warnings
 from google.colab import auth
-import streamlit as st
 warnings.filterwarnings('ignore')
 
-# Configure logging
+# Configure logging to show more detailed output
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -33,14 +27,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-# Define MODEL_TYPES globally
-MODEL_TYPES = {
-    "XGBoost": "xgboost",
-    "LSTM": "lstm",
-    "Decision Tree": "decision_tree",
-    "LightGBM": "lightgbm"
-}
 
 class StockPredictor:
     def __init__(self, bucket_name="mlops-brza"):
@@ -60,12 +46,12 @@ class StockPredictor:
             raise
         
         self.scaler = StandardScaler()
-        self.time_steps = 1  # Single timestep for LSTM (aligned with other models)
+        self.time_steps = 1  # Single timestep for LSTM (no rolling window)
         
         # Verify GCS connection
         self._verify_gcs_connection()
         
-        # Model configurations
+        # Model configurations with reduced complexity for testing
         self.data_prep_methods = {
             'xgboost': self._prepare_tree_based_data,
             'decision_tree': self._prepare_tree_based_data,
@@ -113,8 +99,10 @@ class StockPredictor:
             logger.info("Fetching stock data from GCS")
             blob = self.bucket.blob('stock_data/MASB_latest.csv')
             
+            # Check if file exists
+            logger.info("Checking if stock data file exists...")
             if not blob.exists():
-                raise FileNotFoundError("Stock data file not found in GCS")
+                raise FileNotFoundError("Stock data file not found in GCS at stock_data/MASB_latest.csv")
             
             logger.info("Downloading stock data file...")
             local_file = '/tmp/MASB_latest.csv'
@@ -130,30 +118,6 @@ class StockPredictor:
             logger.error(f"Error fetching stock data: {str(e)}")
             raise
 
-    def fetch_latest_data(self, window_size=30):
-        """Fetch the latest stock data for live predictions"""
-        try:
-            logger.info("Fetching latest stock data for live predictions...")
-            blob = self.bucket.blob('stock_data/MASB_latest.csv')
-            
-            if not blob.exists():
-                raise FileNotFoundError("Stock data file not found in GCS")
-            
-            local_file = '/tmp/MASB_latest.csv'
-            blob.download_to_filename(local_file)
-            
-            data = pd.read_csv(local_file, parse_dates=['date'])
-            data.set_index('date', inplace=True)
-            
-            # Fetch the most recent `window_size` days of data
-            latest_data = data.iloc[-window_size:]
-            
-            logger.info(f"Latest data fetched. Shape: {latest_data.shape}")
-            return latest_data
-        except Exception as e:
-            logger.error(f"Error fetching latest data: {str(e)}")
-            raise
-
     def _calculate_rsi(self, prices, period=14):
         """Calculate RSI indicator"""
         delta = prices.diff()
@@ -167,7 +131,7 @@ class StockPredictor:
         try:
             logger.info("Preparing data for tree-based models...")
             
-            # Calculate technical indicators
+            # Calculate features
             logger.info("Calculating technical indicators...")
             data['SMA_5'] = data['close'].rolling(window=5).mean()
             data['SMA_20'] = data['close'].rolling(window=20).mean()
@@ -201,14 +165,14 @@ class StockPredictor:
             raise
 
     def _prepare_lstm_data(self, data, train_size=0.8):
-        """Prepare data specifically for LSTM (aligned with tree-based models)"""
+        """Prepare data specifically for LSTM (no rolling window)"""
         try:
-            logger.info("Preparing data for LSTM...")
+            logger.info("Preparing data for LSTM (no rolling window)...")
             X_train_scaled, X_test_scaled, y_train, y_test, test_dates, feature_cols = self._prepare_tree_based_data(data, train_size)
             
             # Reshape for LSTM (samples, timesteps, features)
-            X_train_seq = X_train_scaled.reshape(X_train_scaled.shape[0], 1, X_train_scaled.shape[1])
-            X_test_seq = X_test_scaled.reshape(X_test_scaled.shape[0], 1, X_test_scaled.shape[1])
+            X_train_seq = X_train_scaled.reshape(X_train_scaled.shape[0], self.time_steps, X_train_scaled.shape[1])
+            X_test_seq = X_test_scaled.reshape(X_test_scaled.shape[0], self.time_steps, X_test_scaled.shape[1])
             
             logger.info(f"LSTM data preparation completed. Training sequence shape: {X_train_seq.shape}")
             return X_train_seq, X_test_seq, y_train, y_test, test_dates, feature_cols
@@ -216,44 +180,15 @@ class StockPredictor:
             logger.error(f"Error preparing LSTM data: {str(e)}")
             raise
 
-    def prepare_live_data(self, data):
-        """Prepare the latest data for live predictions"""
-        try:
-            logger.info("Preparing latest data for live predictions...")
-            
-            # Calculate technical indicators
-            data['SMA_5'] = data['close'].rolling(window=5).mean()
-            data['SMA_20'] = data['close'].rolling(window=20).mean()
-            data['RSI'] = self._calculate_rsi(data['close'])
-            
-            # Drop NaN values
-            data.dropna(inplace=True)
-            
-            # Scale features
-            feature_cols = [col for col in data.columns if col != 'close']
-            X_latest = data[feature_cols]
-            X_latest_scaled = self.scaler.transform(X_latest)
-            
-            # Reshape for LSTM (if needed)
-            if hasattr(self, 'time_steps'):
-                X_latest_seq = X_latest_scaled.reshape(1, X_latest_scaled.shape[0], X_latest_scaled.shape[1])
-            else:
-                X_latest_seq = X_latest_scaled
-            
-            logger.info(f"Latest data prepared. Shape: {X_latest_seq.shape}")
-            return X_latest_seq, data.index, feature_cols
-        except Exception as e:
-            logger.error(f"Error preparing live data: {str(e)}")
-            raise
-
     def train_xgboost(self, X_train, y_train):
         """Train XGBoost model"""
         logger.info("Training XGBoost model...")
+        # Reduced number of estimators for testing
         params = {
             "objective": "reg:squarederror",
             "max_depth": 5,
             "learning_rate": 0.01,
-            "n_estimators": 100
+            "n_estimators": 100  # Reduced from 500
         }
         model = xgb.XGBRegressor(**params)
         model.fit(X_train, y_train)
@@ -277,11 +212,12 @@ class StockPredictor:
     def train_lightgbm(self, X_train, y_train):
         """Train LightGBM model"""
         logger.info("Training LightGBM model...")
+        # Reduced number of estimators for testing
         params = {
             "objective": "regression",
             "max_depth": 7,
             "learning_rate": 0.05,
-            "n_estimators": 100,
+            "n_estimators": 100,  # Reduced from 500
             "num_leaves": 31
         }
         model = LGBMRegressor(**params)
@@ -290,55 +226,37 @@ class StockPredictor:
         return model, params
 
     def train_lstm(self, X_train, y_train):
-        """Train LSTM model with simplified architecture"""
-        logger.info("Training LSTM model with simplified configuration...")
+        """Train LSTM model"""
+        logger.info("Training LSTM model...")
         input_shape = (X_train.shape[1], X_train.shape[2])
-        
+        # Reduced epochs and increased batch size for testing
         params = {
-            "lstm_units": 64,
-            "dropout_rate": 0.3,
+            "lstm_units_1": 64,
+            "lstm_units_2": 32,
+            "dropout_rate": 0.2,
             "learning_rate": 0.001,
-            "epochs": 50,
-            "batch_size": 32,
-            "validation_split": 0.1
+            "epochs": 10,  # Reduced from 50
+            "batch_size": 64  # Increased from 32
         }
         
         model = Sequential([
             Input(shape=input_shape),
-            LSTM(params["lstm_units"], recurrent_dropout=0.2, kernel_regularizer='l2'),
+            LSTM(params["lstm_units_1"], return_sequences=True),
+            Dropout(params["dropout_rate"]),
+            LSTM(params["lstm_units_2"]),
             Dropout(params["dropout_rate"]),
             Dense(1)
         ])
         
-        model.compile(
-            optimizer=Adam(learning_rate=params["learning_rate"]),
-            loss='huber'
-        )
-        
-        callbacks = [
-            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
-        ]
-        
-        model.fit(
-            X_train, y_train,
-            epochs=params["epochs"],
-            batch_size=params["batch_size"],
-            validation_split=params["validation_split"],
-            callbacks=callbacks,
-            verbose=1
-        )
-        
+        model.compile(optimizer=Adam(learning_rate=params["learning_rate"]), loss='mse')
+        model.fit(X_train, y_train, epochs=params["epochs"], batch_size=params["batch_size"], verbose=1)
         logger.info("LSTM training completed")
         return model, params
 
     def predict_model(self, model, X_test, model_type):
         """Make predictions based on model type"""
         logger.info(f"Making predictions with {model_type} model...")
-        if model_type == 'lstm':
-            return model.predict(X_test, verbose=0).flatten()
-        else:
-            return model.predict(X_test)
+        return model.predict(X_test, verbose=0).flatten() if model_type == 'lstm' else model.predict(X_test)
 
     def save_predictions(self, results, model_type):
         """Save prediction results to GCS"""
@@ -347,70 +265,62 @@ class StockPredictor:
         blob.upload_from_string(json.dumps(results), content_type='application/json')
         logger.info(f"Predictions saved for {model_type}")
 
-    def run_live_predictions(self, model_type, window_size=30, update_interval=60):
-        """Run live predictions for a specific model"""
-        try:
-            logger.info(f"Starting live predictions for {model_type}...")
-            
-            # Load the trained model
-            model, _ = self.models[model_type](None, None)  # Load the pre-trained model
-            
-            while True:
-                # Fetch the latest data
-                latest_data = self.fetch_latest_data(window_size)
+    def run_predictions(self):
+        """Run predictions for all models"""
+        logger.info("Starting prediction pipeline...")
+        data = self.fetch_stock_data()
+        
+        for model_type in self.models:
+            try:
+                logger.info(f"\n{'='*50}\nProcessing {model_type} model\n{'='*50}")
+                prepare_data = self.data_prep_methods[model_type]
                 
-                # Prepare the latest data for predictions
-                X_latest, dates, feature_cols = self.prepare_live_data(latest_data)
+                # Prepare data
+                X_train, X_test, y_train, y_test, test_dates, feature_cols = prepare_data(data)
                 
-                # Make predictions
-                predictions = self.predict_model(model, X_latest, model_type)
+                # Train model and make predictions
+                model, params = self.models[model_type](X_train, y_train)
+                predictions = self.predict_model(model, X_test, model_type)
+                
+                # Calculate metrics
+                metrics = {
+                    'mse': mean_squared_error(y_test, predictions),
+                    'rmse': np.sqrt(mean_squared_error(y_test, predictions)),
+                    'r2': r2_score(y_test, predictions),
+                    'mae': mean_absolute_error(y_test, predictions)
+                }
                 
                 # Prepare results
                 results = {
                     'timestamp': datetime.now().isoformat(),
                     'model_type': model_type,
                     'predictions': predictions.tolist(),
-                    'latest_date': dates[-1].strftime('%Y-%m-%d'),
-                    'actual_value': latest_data['close'].iloc[-1]
+                    'actual_values': y_test.tolist(),
+                    'metrics': metrics,
+                    'parameters': params
                 }
                 
                 # Save results
                 self.save_predictions(results, model_type)
                 
-                logger.info(f"Live prediction saved: {results}")
-                
-                # Wait for the next update
-                time.sleep(update_interval)
-                
-        except Exception as e:
-            logger.error(f"Error in live predictions: {str(e)}")
-            raise
-
-def main():
-    st.title("📈 Stock Price Prediction Dashboard")
-    
-    st.sidebar.title("Dashboard Controls")
-    
-    # Move model selection to top of sidebar
-    model_type = st.sidebar.selectbox(
-        "Select Model",
-        list(MODEL_TYPES.keys()),
-        key="model_select"
-    )
-    
-    # Add analysis type selection
-    analysis_type = st.sidebar.radio(
-        "Analysis Type",
-        ["Historical Analysis", "Live Predictions", "Model Comparison"]
-    )
-    
-    if analysis_type == "Live Predictions":
-        predictor = StockPredictor()
-        predictor.run_live_predictions(model_type, window_size=30, update_interval=60)
-    elif analysis_type == "Model Comparison":
-        display_model_comparison()
-    else:
-        display_historical_analysis(model_type)
+            except Exception as e:
+                logger.error(f"Error processing {model_type}: {str(e)}")
+                continue
 
 if __name__ == "__main__":
-    main()
+    try:
+        logger.info("="*50)
+        logger.info("Starting Stock Prediction Service")
+        logger.info("="*50)
+        
+        # Initialize and run predictor
+        predictor = StockPredictor()
+        predictor.run_predictions()
+        
+        logger.info("="*50)
+        logger.info("Stock Prediction Service Completed Successfully")
+        logger.info("="*50)
+        
+    except Exception as e:
+        logger.error(f"Fatal error occurred: {str(e)}")
+        raise
