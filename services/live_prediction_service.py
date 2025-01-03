@@ -34,6 +34,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Define MODEL_TYPES globally
+MODEL_TYPES = {
+    "XGBoost": "xgboost",
+    "LSTM": "lstm",
+    "Decision Tree": "decision_tree",
+    "LightGBM": "lightgbm"
+}
+
 class StockPredictor:
     def __init__(self, bucket_name="mlops-brza"):
         """Initialize the StockPredictor with GCS bucket configuration"""
