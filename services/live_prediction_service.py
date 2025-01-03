@@ -268,7 +268,7 @@ class StockPredictor:
         
         model.compile(
             optimizer=Adam(learning_rate=params["learning_rate"]),
-            loss='huber_loss'
+            loss='huber'  # Using 'huber' instead of 'huber_loss'
         )
         
         callbacks = [
