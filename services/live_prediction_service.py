@@ -3,7 +3,6 @@
 import streamlit as st
 from google.oauth2 import service_account
 from google.cloud import storage
-
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
@@ -12,16 +11,14 @@ import xgboost as xgb
 from sklearn.tree import DecisionTreeRegressor
 from lightgbm import LGBMRegressor
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, BatchNormalization, Input
 from tensorflow.keras.optimizers import Adam
-
 import json
 import logging
 import sys
 import warnings
 from datetime import datetime
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 import plotly.graph_objs as go
 
 # Suppress warnings for cleaner output
@@ -101,7 +98,7 @@ if st.button("🚀 Run Prediction Pipeline"):
             logger.info("Initializing StockPredictor...")
             self.bucket = bucket
             self.scaler = MinMaxScaler()
-            self.time_steps = 10  # Increased sequence length for LSTM
+            self.time_steps = 20  # Increased sequence length for better temporal patterns
 
             # Verify GCS connection
             self._verify_gcs_connection()
@@ -233,17 +230,33 @@ if st.button("🚀 Run Prediction Pipeline"):
                 raise
 
         def _prepare_lstm_data(self, data, train_size=0.8):
-            """Prepare data specifically for LSTM"""
+            """Prepare data specifically for LSTM with enhanced feature engineering"""
             try:
-                logger.info("Preparing data for LSTM...")
+                logger.info("Preparing data for LSTM with enhanced features...")
+                
+                # Calculate additional technical indicators
+                data['Volume_MA5'] = data['volume'].rolling(window=5).mean()
+                data['Volume_MA20'] = data['volume'].rolling(window=20).mean()
+                data['Price_ROC'] = data['close'].pct_change(periods=5)
+                data['Volume_ROC'] = data['volume'].pct_change(periods=5)
+                
+                # Calculate price momentum
+                data['Momentum'] = data['close'] - data['close'].shift(4)
+                
+                # Volatility indicator
+                data['Volatility'] = data['close'].rolling(window=10).std()
+                
+                # Get the base features from tree-based preparation
                 X_train_scaled, X_test_scaled, y_train, y_test, test_dates, feature_cols = self._prepare_tree_based_data(data, train_size)
-
+                
                 logger.info("Creating sequences for LSTM...")
                 def create_sequences(X, y):
                     Xs, ys = [], []
                     for i in range(len(X) - self.time_steps):
-                        Xs.append(X[i:(i + self.time_steps)])
-                        ys.append(y.iloc[i + self.time_steps] if isinstance(y, pd.Series) else y[i + self.time_steps])
+                        sequence = X[i:(i + self.time_steps)]
+                        target = y.iloc[i + self.time_steps] if isinstance(y, pd.Series) else y[i + self.time_steps]
+                        Xs.append(sequence)
+                        ys.append(target)
                     return np.array(Xs), np.array(ys)
 
                 X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train)
@@ -251,6 +264,7 @@ if st.button("🚀 Run Prediction Pipeline"):
 
                 logger.info(f"LSTM data preparation completed. Training sequence shape: {X_train_seq.shape}")
                 return X_train_seq, X_test_seq, y_train_seq, y_test_seq, test_dates[self.time_steps:], feature_cols
+                
             except Exception as e:
                 logger.error(f"Error preparing LSTM data: {str(e)}")
                 raise
@@ -262,7 +276,7 @@ if st.button("🚀 Run Prediction Pipeline"):
                 "objective": "reg:squarederror",
                 "max_depth": 5,
                 "learning_rate": 0.01,
-                "n_estimators": 100,  # Reduced from 500 for quicker training
+                "n_estimators": 100,
                 "subsample": 0.8,
                 "colsample_bytree": 0.8,
                 "random_state": 42
@@ -293,7 +307,7 @@ if st.button("🚀 Run Prediction Pipeline"):
                 "objective": "regression",
                 "max_depth": 7,
                 "learning_rate": 0.05,
-                "n_estimators": 100,  # Reduced from 500 for quicker training
+                "n_estimators": 100,
                 "num_leaves": 31,
                 "random_state": 42
             }
@@ -303,52 +317,93 @@ if st.button("🚀 Run Prediction Pipeline"):
             return model, params
 
         def train_lstm(self, X_train, y_train):
-            """Train LSTM model with Enhanced Architecture"""
+            """Train LSTM model with improved architecture and training strategy"""
             try:
-                logger.info("Training LSTM model with Enhanced Architecture...")
+                logger.info("Training LSTM model with improved architecture...")
                 input_shape = (X_train.shape[1], X_train.shape[2])
+                
                 params = {
-                    "lstm_units_1": 128,
-                    "lstm_units_2": 64,
-                    "dropout_rate": 0.3,
-                    "learning_rate": 0.0005,
-                    "epochs": 50,  # Increased epochs for better learning
-                    "batch_size": 32,  # Adjusted batch size
-                    "patience": 10  # Early stopping patience
+                    "lstm_units_1": 256,  # Increased capacity
+                    "lstm_units_2": 128,  # Increased capacity
+                    "lstm_units_3": 64,   # Additional layer
+                    "dropout_rate": 0.2,  # Adjusted dropout
+                    "learning_rate": 0.001,
+                    "epochs": 100,        # Increased epochs
+                    "batch_size": 64,     # Increased batch size
+                    "patience": 15        # Increased patience
                 }
 
                 model = Sequential([
-                    Input(shape=input_shape),
-                    Bidirectional(LSTM(params["lstm_units_1"], return_sequences=True)),
+                    # First LSTM layer with batch normalization
+                    Bidirectional(LSTM(params["lstm_units_1"], 
+                                     return_sequences=True,
+                                     kernel_initializer='he_normal')),
+                    BatchNormalization(),
                     Dropout(params["dropout_rate"]),
-                    LSTM(params["lstm_units_2"]),
+                    
+                    # Second LSTM layer
+                    Bidirectional(LSTM(params["lstm_units_2"],
+                                     return_sequences=True,
+                                     kernel_initializer='he_normal')),
+                    BatchNormalization(),
                     Dropout(params["dropout_rate"]),
-                    Dense(1)
+                    
+                    # Third LSTM layer
+                    LSTM(params["lstm_units_3"],
+                         kernel_initializer='he_normal'),
+                    BatchNormalization(),
+                    Dropout(params["dropout_rate"]),
+                    
+                    # Output layers with better regularization
+                    Dense(32, activation='relu'),
+                    BatchNormalization(),
+                    Dense(1, activation='linear')
                 ])
 
                 optimizer = Adam(learning_rate=params["learning_rate"])
-                model.compile(optimizer=optimizer, loss='mse')
+                model.compile(optimizer=optimizer, loss='huber')  # Huber loss for robustness
 
-                # Callbacks
-                early_stop = EarlyStopping(monitor='val_loss', patience=params["patience"], restore_best_weights=True)
-                checkpoint = ModelCheckpoint(filepath='/tmp/lstm_best_model.h5', monitor='val_loss', save_best_only=True)
+                # Enhanced callbacks
+                early_stop = EarlyStopping(
+                    monitor='val_loss',
+                    patience=params["patience"],
+                    restore_best_weights=True,
+                    verbose=1
+                )
+                
+                reduce_lr = ReduceLROnPlateau(
+                    monitor='val_loss',
+                    factor=0.2,
+                    patience=5,
+                    min_lr=0.0001,
+                    verbose=1
+                )
+                
+                checkpoint = ModelCheckpoint(
+                    filepath='/tmp/lstm_best_model.h5',
+                    monitor='val_loss',
+                    save_best_only=True,
+                    verbose=1
+                )
 
-                # Split a validation set from training data
+                # Split validation set
                 split = int(0.8 * len(X_train))
                 X_tr, X_val = X_train[:split], X_train[split:]
                 y_tr, y_val = y_train[:split], y_train[split:]
 
+                # Training with callbacks
                 model.fit(
                     X_tr, y_tr,
                     epochs=params["epochs"],
                     batch_size=params["batch_size"],
                     validation_data=(X_val, y_val),
-                    callbacks=[early_stop, checkpoint],
+                    callbacks=[early_stop, reduce_lr, checkpoint],
                     verbose=1
                 )
 
-                logger.info("LSTM training completed with Enhanced Architecture.")
+                logger.info("LSTM training completed with improved architecture.")
                 return model, params
+                
             except Exception as e:
                 logger.error(f"Error training LSTM model: {str(e)}")
                 raise
@@ -395,23 +450,13 @@ if st.button("🚀 Run Prediction Pipeline"):
                         predictions = self.predict_model(model, X_test, model_type)
 
                         # Calculate metrics
-                        if model_type == 'lstm':
-                            # For LSTM, ensure predictions and y_test are aligned
-                            metrics = {
-                                'mse': mean_squared_error(y_test, predictions),
-                                'rmse': np.sqrt(mean_squared_error(y_test, predictions)),
-                                'r2': r2_score(y_test, predictions),
-                                'mae': mean_absolute_error(y_test, predictions),
-                                'mape': mean_absolute_percentage_error(y_test, predictions)
-                            }
-                        else:
-                            metrics = {
-                                'mse': mean_squared_error(y_test, predictions),
-                                'rmse': np.sqrt(mean_squared_error(y_test, predictions)),
-                                'r2': r2_score(y_test, predictions),
-                                'mae': mean_absolute_error(y_test, predictions),
-                                'mape': mean_absolute_percentage_error(y_test, predictions)
-                            }
+                        metrics = {
+                            'mse': mean_squared_error(y_test, predictions),
+                            'rmse': np.sqrt(mean_squared_error(y_test, predictions)),
+                            'r2': r2_score(y_test, predictions),
+                            'mae': mean_absolute_error(y_test, predictions),
+                            'mape': mean_absolute_percentage_error(y_test, predictions)
+                        }
 
                         # Prepare results
                         results = {
@@ -435,9 +480,9 @@ if st.button("🚀 Run Prediction Pipeline"):
                         fig.add_trace(go.Scatter(x=test_dates, y=y_test, mode='lines', name='Actual'))
                         fig.add_trace(go.Scatter(x=test_dates, y=predictions, mode='lines', name='Predicted'))
                         fig.update_layout(title=f"Actual vs Predicted for {model_type.capitalize()} Model",
-                                          xaxis_title='Date',
-                                          yaxis_title='Price',
-                                          legend=dict(x=0, y=1))
+                                       xaxis_title='Date',
+                                       yaxis_title='Price',
+                                       legend=dict(x=0, y=1))
                         st.plotly_chart(fig)
 
                         logger.info(f"{model_type.capitalize()} Model Metrics: {metrics}")
