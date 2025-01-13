@@ -220,12 +220,23 @@ class StockPredictor:
             logger.error(f"Error fetching stock data: {str(e)}")
             raise
 
+    ############################################################################
+    # MODIFIED prepare_training_data() to ensure a non-empty test set even if
+    # drift is detected. If drift => train on old_data, test on new_data.
+    ############################################################################
     def prepare_training_data(self, data, train_size=0.8):
         """
-        Split data into old_data/new_data based on 30-day cutoff.
-        If drift is detected, keep only old_data for training. 
-        Return X_train, X_test, y_train, y_test for tree-based models (2D).
-        If insufficient data, return (None, None, None, None).
+        1) If drift is detected:
+             train_data = old_data
+             test_data  = new_data (last 30 days)
+           => ensures we have a non-empty test set (assuming new_data has some rows 
+              after rolling features).
+           
+        2) If no drift:
+             do normal 80/20 split on the entire dataset.
+             
+        Returns X_train, X_test, y_train, y_test (2D) for tree-based models.
+        If insufficient data after rolling-window, returns (None, None, None, None).
         """
         cutoff_date = data.index.max() - pd.Timedelta(days=30)
         old_data = data[data.index <= cutoff_date]
@@ -239,61 +250,66 @@ class StockPredictor:
             logger.warning("Alpha drift detected")
             self._handle_alpha_drift(drift_metrics)
             self.drift_manager.store_untrained_data(new_data)
+
+            # Train on old_data
             train_data = old_data
+            # Test on new_data
+            test_data = new_data
         else:
+            # No drift => entire data is for train/test
             train_data = data
-        
-        # Prepare features
-        X = self._prepare_features(train_data)  # 2D
-        y = train_data['close'].reindex(X.index)
-        
-        if len(X) == 0 or len(y) == 0:
-            logger.error("No valid rows in train_data after feature engineering. Returning None.")
-            return None, None, None, None
+            test_data  = pd.DataFrame()  # We'll do an 80/20 split below
 
-        # Train/test split
+        # Prepare train_data features
+        X_train_feats = self._prepare_features(train_data)
+        y_train_vals  = train_data['close'].reindex(X_train_feats.index)
+
+        # If drift => test_data is last 30 days
         if has_drift:
-            X_train = X[X.index <= cutoff_date]
-            X_test = X[X.index > cutoff_date]
-            y_train = y[y.index <= cutoff_date]
-            y_test = y[y.index > cutoff_date]
+            X_test_feats = self._prepare_features(test_data)
+            y_test_vals  = test_data['close'].reindex(X_test_feats.index)
         else:
-            split_idx = int(len(X) * train_size)
-            X_train, X_test = X[:split_idx], X[split_idx:]
-            y_train, y_test = y[:split_idx], y[split_idx:]
-        
-        # If still empty
-        if len(X_train) == 0 or len(y_train) == 0:
-            logger.error("X_train or y_train is empty. Returning None.")
-            return None, None, None, None
-        
-        return X_train, X_test, y_train, y_test
+            # If no drift => do normal 80/20 split within train_data
+            if len(X_train_feats) == 0:
+                logger.error("No valid training rows after feature engineering.")
+                return None, None, None, None
+            split_idx = int(len(X_train_feats) * train_size)
+            X_test_feats = X_train_feats[split_idx:]
+            y_test_vals  = y_train_vals[split_idx:]
+            X_train_feats = X_train_feats[:split_idx]
+            y_train_vals  = y_train_vals[:split_idx]
 
-    ### MODIFIED: Smaller rolling windows ###
+        # Check if we ended up with zero rows
+        if len(X_train_feats) == 0 or len(y_train_vals) == 0:
+            logger.error("X_train or y_train is empty. Skipping training.")
+            return None, None, None, None
+        if len(X_test_feats) == 0 or len(y_test_vals) == 0:
+            logger.warning("X_test or y_test is empty => skipping test set.")
+            # We'll return (X_train, None, y_train, None) so we can train 
+            # but have no test eval
+            return X_train_feats, None, y_train_vals, None
+
+        return X_train_feats, X_test_feats, y_train_vals, y_test_vals
+
+    ##########################################################################
+    # Smaller rolling windows so we lose fewer rows
+    ##########################################################################
     def _prepare_features(self, data):
         """
-        Compute technical indicators with smaller rolling windows to drop fewer rows.
+        Example with smaller rolling windows to drop fewer rows from NaNs.
         """
         features = pd.DataFrame(index=data.index)
         
-        # Example smaller windows
+        # Shorter windows
         features['SMA_3'] = data['close'].rolling(window=3).mean()
         features['SMA_10'] = data['close'].rolling(window=10).mean()
         
-        # RSI with period=7 instead of 14
-        features['RSI'] = self._calculate_rsi(data['close'], period=7)
-        
-        # MACD with faster settings: fast=6, slow=12, signal=3
+        features['RSI'] = self._calculate_rsi(data['close'], period=7)  # shorter RSI period
         features['MACD'] = self._calculate_macd(data['close'], fast=6, slow=12, signal=3)
-        
-        # Bollinger Bands with period=10, std_dev=1
         features['BB_upper'], features['BB_lower'] = self._calculate_bollinger_bands(
             data['close'], period=10, std_dev=1
         )
-        
-        # Smaller volume rolling window of 10 days
         features['Volume_SMA'] = data['volume'].rolling(window=10).mean()
-        
         features['Price_Range'] = data['high'] - data['low']
         
         features.dropna(inplace=True)
@@ -333,7 +349,6 @@ class StockPredictor:
         X_train_df, X_test_df = features[:split_idx], features[split_idx:]
         y_train_series, y_test_series = y[:split_idx], y[split_idx:]
         
-        # Scale features
         X_train_scaled = self.scaler.fit_transform(X_train_df)
         X_test_scaled = self.scaler.transform(X_test_df)
         
@@ -403,7 +418,7 @@ class StockPredictor:
     def train_model(self, X_train, y_train, model_type='xgboost'):
         """
         For tree-based models, X_train is 2D.
-        For LSTM, you must call train_lstm(...) separately (since it needs 3D).
+        For LSTM, you must call train_lstm(...) separately (it needs 3D).
         """
         if model_type == 'xgboost':
             return self.train_xgboost(X_train, y_train)
@@ -415,9 +430,6 @@ class StockPredictor:
             raise ValueError(f"Unknown model type: {model_type}")
 
     def train_xgboost(self, X_train, y_train):
-        """
-        Scale and train XGBoost.
-        """
         if len(X_train) == 0:
             logger.error("X_train is empty in train_xgboost. Skipping.")
             return None, {}
@@ -467,9 +479,6 @@ class StockPredictor:
         return model, params
 
     def train_lstm(self, X_train_seq, y_train_seq):
-        """
-        For LSTM, X_train_seq should be 3D: (samples, timesteps, features)
-        """
         if X_train_seq is None or len(X_train_seq) == 0:
             logger.error("X_train_seq is empty in train_lstm. Skipping.")
             return None, {}
@@ -511,16 +520,13 @@ class StockPredictor:
         return model, params
 
     def evaluate_tree_based(self, model, X_test, y_test):
-        """
-        Evaluate a tree-based model on 2D features.
-        Check if X_test is empty before scaling.
-        """
         if model is None:
             logger.warning("No model provided for tree-based evaluation.")
             return {}
         
-        if X_test is None or len(X_test) == 0:
-            logger.warning("Skipping evaluation because X_test is empty.")
+        # If we have no test set, skip evaluation
+        if X_test is None or y_test is None or len(X_test) == 0:
+            logger.warning("Skipping evaluation because X_test is empty or None.")
             return {}
         
         X_test_scaled = self.scaler.transform(X_test)
@@ -533,15 +539,12 @@ class StockPredictor:
         }
 
     def evaluate_lstm(self, model, X_test_seq, y_test_seq):
-        """
-        Evaluate LSTM model on 3D sequences.
-        """
         if model is None:
             logger.warning("No model provided for LSTM evaluation.")
             return {}
         
-        if X_test_seq is None or len(X_test_seq) == 0:
-            logger.warning("Skipping LSTM evaluation because X_test_seq is empty.")
+        if X_test_seq is None or y_test_seq is None or len(X_test_seq) == 0:
+            logger.warning("Skipping LSTM evaluation because X_test_seq is empty or None.")
             return {}
         
         preds = model.predict(X_test_seq).flatten()
