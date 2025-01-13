@@ -49,10 +49,6 @@ class DataDriftManager:
         logger.info(f"Added {len(data)} records to buffer. Total: {len(self.new_data_buffer)}")
     
     def check_alpha_drift(self, new_data):
-        """
-        Checks for alpha drift by comparing statistical metrics from reference_data vs. new_data.
-        Converts numeric/boolean values to Python-native types to avoid JSON serialization errors.
-        """
         if self.reference_data is None:
             return False, {}
             
@@ -228,16 +224,17 @@ class StockPredictor:
         """
         Split data into old_data/new_data based on 30-day cutoff.
         If drift is detected, keep only old_data for training. 
-        Return X_train, X_test, y_train, y_test (2D arrays) for tree-based models.
-        If insufficient data, return None.
+        Return X_train, X_test, y_train, y_test for tree-based models (2D).
+        If insufficient data, return (None, None, None, None).
         """
         cutoff_date = data.index.max() - pd.Timedelta(days=30)
         old_data = data[data.index <= cutoff_date]
         new_data = data[data.index > cutoff_date]
         
+        # Add new data to drift manager
         self.drift_manager.add_new_data(new_data)
-        
         has_drift, drift_metrics = self.drift_manager.check_alpha_drift(new_data)
+        
         if has_drift:
             logger.warning("Alpha drift detected")
             self._handle_alpha_drift(drift_metrics)
@@ -246,14 +243,15 @@ class StockPredictor:
         else:
             train_data = data
         
-        X = self._prepare_features(train_data)  # 2D features
+        # Prepare features
+        X = self._prepare_features(train_data)  # 2D
         y = train_data['close'].reindex(X.index)
         
         if len(X) == 0 or len(y) == 0:
             logger.error("No valid rows in train_data after feature engineering. Returning None.")
             return None, None, None, None
 
-        # Standard train/test split, or based on cutoff if drift
+        # Train/test split
         if has_drift:
             X_train = X[X.index <= cutoff_date]
             X_test = X[X.index > cutoff_date]
@@ -264,6 +262,7 @@ class StockPredictor:
             X_train, X_test = X[:split_idx], X[split_idx:]
             y_train, y_test = y[:split_idx], y[split_idx:]
         
+        # If still empty
         if len(X_train) == 0 or len(y_train) == 0:
             logger.error("X_train or y_train is empty. Returning None.")
             return None, None, None, None
@@ -272,7 +271,7 @@ class StockPredictor:
 
     def _prepare_features(self, data):
         """
-        Basic technical indicators, dropping NaNs from rolling.
+        Compute basic technical indicators; drop rows with NaN.
         """
         features = pd.DataFrame(index=data.index)
         features['SMA_5'] = data['close'].rolling(window=5).mean()
@@ -304,29 +303,27 @@ class StockPredictor:
         sma = prices.rolling(window=period).mean()
         std = prices.rolling(window=period).std()
         return sma + (std_dev * std), sma - (std_dev * std)
-    
+
     def _prepare_lstm_data(self, data, train_size=0.8, sequence_length=60):
         """
         Prepare 3D sequences for LSTM.
-        We reuse the same feature engineering but create sequences of length=60.
         """
-        features = self._prepare_features(data)
+        features = self._prepare_features(data)  # 2D
         y = data['close'].reindex(features.index)
         
         if len(features) == 0 or len(y) == 0:
             logger.error("No valid rows for LSTM after feature engineering.")
             return None, None, None, None, None
         
-        # Train/test split
         split_idx = int(len(features) * train_size)
         X_train_df, X_test_df = features[:split_idx], features[split_idx:]
         y_train_series, y_test_series = y[:split_idx], y[split_idx:]
         
         # Scale features
+        # Note: best practice is to fit scaler on training set only
         X_train_scaled = self.scaler.fit_transform(X_train_df)
         X_test_scaled = self.scaler.transform(X_test_df)
         
-        # Convert to sequences
         def create_sequences(X_arr, y_arr, seq_len):
             X_seq, y_seq = [], []
             for i in range(len(X_arr) - seq_len):
@@ -337,16 +334,13 @@ class StockPredictor:
         X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train_series.values, sequence_length)
         X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test_series.values, sequence_length)
         
-        # For debugging, you can check shapes
-        # logger.info(f"LSTM Data Shapes => X_train_seq: {X_train_seq.shape}, y_train_seq: {y_train_seq.shape}")
+        if len(X_train_seq) == 0 or len(y_train_seq) == 0:
+            logger.warning("LSTM training sequence is empty. Returning None.")
+            return None, None, None, None, None
         
         return X_train_seq, X_test_seq, y_train_seq, y_test_seq, X_test_df.index[sequence_length:]
 
     def _handle_alpha_drift(self, drift_metrics):
-        """
-        Logs drift information to GCS. 
-        If enough untrained data accumulates, triggers retraining.
-        """
         drift_log = {
             'timestamp': datetime.now().isoformat(),
             'drift_metrics': drift_metrics,
@@ -360,53 +354,43 @@ class StockPredictor:
             existing_logs = json.loads(drift_log_blob.download_as_string())
         
         existing_logs.append(drift_log)
-        
-        # Write JSON back to GCS
         drift_log_blob.upload_from_string(json.dumps(existing_logs))
         
-        # If there's enough untrained data, retrain
         if len(self.drift_manager.untrained_data) >= 1000:
-            logger.info("Sufficient untrained data accumulated. Starting retraining...")
+            logger.info("Sufficient untrained data. Starting retraining...")
             self._trigger_retraining()
     
     def _trigger_retraining(self):
-        """
-        Combine reference_data with untrained_data, retrain, reset untrained buffer.
-        """
         try:
             all_data = pd.concat([
                 self.drift_manager.reference_data,
                 self.drift_manager.untrained_data
             ]).sort_index()
             
-            # Re-prepare data
             X_train, X_test, y_train, y_test = self.prepare_training_data(all_data)
             if X_train is None or len(X_train) == 0:
-                logger.warning("Cannot retrain model because training set is empty.")
+                logger.warning("No data to retrain after drift. Skipping.")
                 return None
 
-            new_model = self.train_model(X_train, y_train, 'xgboost')  # for example
+            new_model = self.train_model(X_train, y_train, 'xgboost')
             self.drift_manager.set_reference_data(all_data)
             self.drift_manager.untrained_data = pd.DataFrame()
             
-            logger.info("Model retraining completed")
+            logger.info("Retraining completed.")
             return new_model
         except Exception as e:
             logger.error(f"Retraining error: {str(e)}")
             raise
 
     def handle_data_drift(self, data, drift_report):
-        """
-        Example: always treat drift as HIGH severity => promote to beta, etc.
-        """
         drift_analysis = {'severity': 'HIGH'}
         action_taken = {'type': 'PROMOTE_BETA'}
         return drift_analysis, action_taken
 
     def train_model(self, X_train, y_train, model_type='xgboost'):
         """
-        For tree-based models (XGBoost, LightGBM, Decision Tree), X_train is 2D.
-        For LSTM, you must pass 3D arrays => call `train_lstm(...)` directly.
+        For tree-based models, X_train is 2D.
+        For LSTM, you must call train_lstm(...) separately (since it needs 3D).
         """
         if model_type == 'xgboost':
             return self.train_xgboost(X_train, y_train)
@@ -415,9 +399,16 @@ class StockPredictor:
         elif model_type == 'lightgbm':
             return self.train_lightgbm(X_train, y_train)
         else:
-            raise ValueError(f"Unsupported model type in train_model: {model_type}")
+            raise ValueError(f"Unknown model type: {model_type}")
 
     def train_xgboost(self, X_train, y_train):
+        """
+        Scale and train XGBoost.
+        """
+        if len(X_train) == 0:
+            logger.error("X_train is empty in train_xgboost. Skipping.")
+            return None, {}
+        
         X_train_scaled = self.scaler.fit_transform(X_train)
         params = {
             "objective": "reg:squarederror",
@@ -430,6 +421,10 @@ class StockPredictor:
         return model, params
 
     def train_decision_tree(self, X_train, y_train):
+        if len(X_train) == 0:
+            logger.error("X_train is empty in train_decision_tree. Skipping.")
+            return None, {}
+        
         X_train_scaled = self.scaler.fit_transform(X_train)
         params = {
             "max_depth": 10,
@@ -442,6 +437,10 @@ class StockPredictor:
         return model, params
 
     def train_lightgbm(self, X_train, y_train):
+        if len(X_train) == 0:
+            logger.error("X_train is empty in train_lightgbm. Skipping.")
+            return None, {}
+        
         X_train_scaled = self.scaler.fit_transform(X_train)
         params = {
             "objective": "regression",
@@ -456,8 +455,12 @@ class StockPredictor:
 
     def train_lstm(self, X_train_seq, y_train_seq):
         """
-        For LSTM, X_train_seq should be 3D: (samples, timesteps, features).
+        For LSTM, X_train_seq should be 3D: (samples, timesteps, features)
         """
+        if X_train_seq is None or len(X_train_seq) == 0:
+            logger.error("X_train_seq is empty in train_lstm. Skipping.")
+            return None, {}
+        
         params = {
             "lstm_units": 128,
             "dropout_rate": 0.3,
@@ -467,7 +470,8 @@ class StockPredictor:
         }
         
         model = Sequential([
-            LSTM(params["lstm_units"], return_sequences=True, input_shape=(X_train_seq.shape[1], X_train_seq.shape[2])),
+            LSTM(params["lstm_units"], return_sequences=True, 
+                 input_shape=(X_train_seq.shape[1], X_train_seq.shape[2])),
             Dropout(params["dropout_rate"]),
             LSTM(params["lstm_units"]//2),
             Dropout(params["dropout_rate"]),
@@ -494,8 +498,20 @@ class StockPredictor:
         return model, params
 
     def evaluate_tree_based(self, model, X_test, y_test):
-        """Evaluate a tree-based model on 2D features."""
-        X_test_scaled = self.scaler.transform(X_test)
+        """
+        Evaluate a tree-based model on 2D features.
+        Check if X_test is empty before scaling.
+        """
+        if model is None:
+            logger.warning("No model provided for tree-based evaluation.")
+            return {}
+        
+        if X_test is None or len(X_test) == 0:
+            logger.warning("Skipping evaluation because X_test is empty.")
+            return {}
+        
+        # Transform test set
+        X_test_scaled = self.scaler.transform(X_test)  # Could fail if 0 rows
         preds = model.predict(X_test_scaled)
         return {
             'mse': mean_squared_error(y_test, preds),
@@ -505,7 +521,17 @@ class StockPredictor:
         }
 
     def evaluate_lstm(self, model, X_test_seq, y_test_seq):
-        """Evaluate an LSTM model on 3D sequences."""
+        """
+        Evaluate LSTM model on 3D sequences.
+        """
+        if model is None:
+            logger.warning("No model provided for LSTM evaluation.")
+            return {}
+        
+        if X_test_seq is None or len(X_test_seq) == 0:
+            logger.warning("Skipping LSTM evaluation because X_test_seq is empty.")
+            return {}
+        
         preds = model.predict(X_test_seq).flatten()
         return {
             'mse': mean_squared_error(y_test_seq, preds),
@@ -523,50 +549,54 @@ if __name__ == "__main__":
         # 1) Fetch the raw data
         data = predictor.fetch_stock_data()
         
-        # 2) Prepare data for NON-LSTM models (XGBoost, Decision Tree, LightGBM)
+        # 2) Prepare data for tree-based models
         X_train, X_test, y_train, y_test = predictor.prepare_training_data(data)
         
-        # 3) Train & evaluate non-LSTM models
         evaluations = {}
         trained_models = {}
         
-        if X_train is not None:
-            # XGBoost
+        # 3) Train & evaluate XGBoost
+        if X_train is not None and len(X_train) > 0:
             logger.info("Training xgboost model...")
             xgb_model, _ = predictor.train_model(X_train, y_train, "xgboost")
             trained_models["xgboost"] = xgb_model
             evaluations["xgboost"] = predictor.evaluate_tree_based(xgb_model, X_test, y_test)
-            
-            # Decision Tree
+        else:
+            logger.warning("Skipping XGBoost because X_train is empty or None.")
+        
+        # 4) Train & evaluate Decision Tree
+        if X_train is not None and len(X_train) > 0:
             logger.info("Training decision_tree model...")
             dt_model, _ = predictor.train_model(X_train, y_train, "decision_tree")
             trained_models["decision_tree"] = dt_model
             evaluations["decision_tree"] = predictor.evaluate_tree_based(dt_model, X_test, y_test)
-            
-            # LightGBM
+        else:
+            logger.warning("Skipping Decision Tree because X_train is empty or None.")
+        
+        # 5) Train & evaluate LightGBM
+        if X_train is not None and len(X_train) > 0:
             logger.info("Training lightgbm model...")
             lgb_model, _ = predictor.train_model(X_train, y_train, "lightgbm")
             trained_models["lightgbm"] = lgb_model
             evaluations["lightgbm"] = predictor.evaluate_tree_based(lgb_model, X_test, y_test)
         else:
-            logger.warning("Skipping all tree-based models because X_train is None or empty.")
+            logger.warning("Skipping LightGBM because X_train is empty or None.")
         
-        # 4) Prepare data specifically for LSTM (3D)
+        # 6) Prepare data specifically for LSTM (3D sequences)
         lstm_prepared = predictor._prepare_lstm_data(data, train_size=0.8, sequence_length=60)
         if lstm_prepared is not None:
             X_train_seq, X_test_seq, y_train_seq, y_test_seq, test_dates = lstm_prepared
-            # Only train if there's enough sequences
             if X_train_seq is not None and len(X_train_seq) > 0:
-                logger.info("Training lstm model...")
+                logger.info("Training LSTM model...")
                 lstm_model, _ = predictor.train_lstm(X_train_seq, y_train_seq)
                 trained_models["lstm"] = lstm_model
                 evaluations["lstm"] = predictor.evaluate_lstm(lstm_model, X_test_seq, y_test_seq)
             else:
-                logger.warning("Skipping LSTM model because sequence data is insufficient.")
+                logger.warning("Skipping LSTM training because X_train_seq is empty.")
         else:
-            logger.warning("Skipping LSTM model because _prepare_lstm_data returned None.")
+            logger.warning("Skipping LSTM because _prepare_lstm_data returned None.")
         
-        # 5) Print evaluations
+        # 7) Log evaluations
         logger.info("Model evaluations:")
         logger.info(json.dumps(evaluations, indent=2))
         
