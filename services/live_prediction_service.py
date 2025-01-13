@@ -18,6 +18,7 @@ from scipy import stats
 import json
 import warnings
 from google.colab import auth
+
 warnings.filterwarnings('ignore')
 
 logging.basicConfig(
@@ -26,6 +27,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
 
 class DataDriftManager:
     def __init__(self):
@@ -47,6 +49,10 @@ class DataDriftManager:
         logger.info(f"Added {len(data)} records to buffer. Total: {len(self.new_data_buffer)}")
     
     def check_alpha_drift(self, new_data):
+        """
+        Checks for alpha drift by comparing statistical metrics from reference_data vs. new_data.
+        Converts all numeric/boolean values to Python-native types to avoid JSON serialization errors.
+        """
         if self.reference_data is None:
             return False, {}
             
@@ -57,16 +63,35 @@ class DataDriftManager:
             if column in new_data.columns:
                 ref_stats = self._calculate_stats(self.reference_data[column])
                 new_stats = self._calculate_stats(new_data[column])
-                drift = abs(new_stats['mean'] - ref_stats['mean']) / ref_stats['std']
                 
+                # Calculate drift
+                drift_val = abs(new_stats['mean'] - ref_stats['mean']) / ref_stats['std']
+                
+                # Convert to native Python types:
+                drift_magnitude = float(drift_val) if not pd.isna(drift_val) else 0.0
+                is_significant = bool(drift_magnitude > self.alpha_drift_threshold)
+                
+                # Build a fully JSON-serializable dictionary
                 drift_metrics[column] = {
-                    'drift_magnitude': drift,
-                    'is_significant': drift > self.alpha_drift_threshold,
-                    'ref_stats': ref_stats,
-                    'new_stats': new_stats
+                    'drift_magnitude': drift_magnitude,
+                    'is_significant': is_significant,
+                    'ref_stats': {
+                        'mean': float(ref_stats['mean']) if ref_stats['mean'] is not None else 0.0,
+                        'std': float(ref_stats['std']) if ref_stats['std'] is not None else 0.0,
+                        'median': float(ref_stats['median']) if ref_stats['median'] is not None else 0.0,
+                        'q1': float(ref_stats['q1']) if ref_stats['q1'] is not None else 0.0,
+                        'q3': float(ref_stats['q3']) if ref_stats['q3'] is not None else 0.0,
+                    },
+                    'new_stats': {
+                        'mean': float(new_stats['mean']) if new_stats['mean'] is not None else 0.0,
+                        'std': float(new_stats['std']) if new_stats['std'] is not None else 0.0,
+                        'median': float(new_stats['median']) if new_stats['median'] is not None else 0.0,
+                        'q1': float(new_stats['q1']) if new_stats['q1'] is not None else 0.0,
+                        'q3': float(new_stats['q3']) if new_stats['q3'] is not None else 0.0,
+                    }
                 }
                 
-                if drift > self.alpha_drift_threshold:
+                if is_significant:
                     significant_drift = True
         
         return significant_drift, drift_metrics
@@ -79,6 +104,7 @@ class DataDriftManager:
             'q1': series.quantile(0.25),
             'q3': series.quantile(0.75)
         }
+
 
 class ModelVersionControl:
     def __init__(self):
@@ -129,6 +155,7 @@ class ModelVersionControl:
             return False
         return True
 
+
 class StockPredictor:
     def __init__(self, bucket_name="mlops-brza"):
         logger.info("Initializing StockPredictor...")
@@ -148,6 +175,7 @@ class StockPredictor:
         self.version_control = ModelVersionControl()
         self._verify_gcs_connection()
         
+        # One helper method for each model type
         self.data_prep_methods = {
             'xgboost': self._prepare_tree_based_data,
             'decision_tree': self._prepare_tree_based_data,
@@ -155,6 +183,7 @@ class StockPredictor:
             'lstm': self._prepare_lstm_data
         }
         
+        # Training method for each model type
         self.models = {
             'xgboost': self.train_xgboost,
             'decision_tree': self.train_decision_tree,
@@ -167,8 +196,10 @@ class StockPredictor:
             if not self.bucket.exists():
                 raise Exception(f"Bucket {self.bucket_name} not found")
             
-            required_folders = ['stock_data/', 'live_predictions/', 'drift_analysis/', 
-                              'model_events/', 'version_control/']
+            required_folders = [
+                'stock_data/', 'live_predictions/', 
+                'drift_analysis/', 'model_events/', 'version_control/'
+            ]
             
             for folder in required_folders:
                 blob = self.bucket.blob(folder)
@@ -181,6 +212,10 @@ class StockPredictor:
             raise
 
     def prepare_training_data(self, data, train_size=0.8):
+        """
+        Prepares training data, checking for alpha drift among the latest 30 days.
+        If drift is detected, the new data is stored separately as untrained.
+        """
         cutoff_date = data.index.max() - pd.Timedelta(days=30)
         old_data = data[data.index <= cutoff_date]
         new_data = data[data.index > cutoff_date]
@@ -212,6 +247,9 @@ class StockPredictor:
         return X_train, X_test, y_train, y_test
 
     def _prepare_features(self, data):
+        """
+        Basic feature engineering for all model types.
+        """
         features = pd.DataFrame(index=data.index)
         
         # Technical indicators
@@ -244,7 +282,9 @@ class StockPredictor:
         return sma + (std_dev * std), sma - (std_dev * std)
         
     def _prepare_tree_based_data(self, data, train_size=0.8):
-        """Prepare data for tree-based models"""
+        """
+        Prepare data for tree-based models (XGBoost, LightGBM, Decision Tree).
+        """
         try:
             logger.info("Preparing data for tree-based models...")
             
@@ -253,15 +293,15 @@ class StockPredictor:
             y = data['close']
             
             # Split data
-            train_size = int(len(data) * train_size)
-            train_data = data[:train_size]
-            test_data = data[train_size:]
+            train_size_int = int(len(data) * train_size)
+            train_data = data[:train_size_int]
+            test_data = data[train_size_int:]
             
             # Prepare feature sets
-            X_train = X[:train_size]
-            X_test = X[train_size:]
-            y_train = y[:train_size]
-            y_test = y[train_size:]
+            X_train = X[:train_size_int]
+            X_test = X[train_size_int:]
+            y_train = y[:train_size_int]
+            y_test = y[train_size_int:]
             
             # Scale features
             X_train_scaled = self.scaler.fit_transform(X_train)
@@ -275,7 +315,9 @@ class StockPredictor:
             raise
             
     def _prepare_lstm_data(self, data, train_size=0.8, sequence_length=60):
-        """Prepare data specifically for LSTM"""
+        """
+        Prepare data specifically for LSTM (creates sequences).
+        """
         try:
             logger.info("Preparing data for LSTM...")
             
@@ -283,14 +325,13 @@ class StockPredictor:
             X_train_scaled, X_test_scaled, y_train, y_test, test_dates = self._prepare_tree_based_data(data, train_size)
             
             # Create sequences for LSTM
-            def create_sequences(X, y, sequence_length):
+            def create_sequences(X, y, seq_length):
                 Xs, ys = [], []
-                for i in range(len(X) - sequence_length):
-                    Xs.append(X[i:(i + sequence_length)])
-                    ys.append(y[i + sequence_length])
+                for i in range(len(X) - seq_length):
+                    Xs.append(X[i:(i + seq_length)])
+                    ys.append(y[i + seq_length])
                 return np.array(Xs), np.array(ys)
             
-            # Create sequence data
             X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train.values, sequence_length)
             X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test.values, sequence_length)
             
@@ -302,7 +343,10 @@ class StockPredictor:
             raise
 
     def fetch_stock_data(self):
-        """Fetch stock data from GCS and process it"""
+        """
+        Fetch stock data from GCS and process it. 
+        Also checks for drift if reference_data is already set.
+        """
         try:
             logger.info("Fetching stock data from GCS")
             blob = self.bucket.blob('stock_data/MASB_latest.csv')
@@ -334,24 +378,37 @@ class StockPredictor:
             raise
 
     def _handle_alpha_drift(self, drift_metrics):
+        """
+        Logs drift information to GCS. 
+        If enough untrained data accumulates, triggers retraining.
+        """
         drift_log = {
             'timestamp': datetime.now().isoformat(),
-            'drift_metrics': drift_metrics,
+            'drift_metrics': drift_metrics,  # Already converted to Python types
             'action_taken': 'separate_training'
         }
         
         drift_log_blob = self.bucket.blob('drift_analysis/alpha_drift_log.json')
         existing_logs = []
+        
         if drift_log_blob.exists():
             existing_logs = json.loads(drift_log_blob.download_as_string())
+        
         existing_logs.append(drift_log)
+        
+        # Write JSON back to GCS
         drift_log_blob.upload_from_string(json.dumps(existing_logs))
         
+        # If there's enough untrained data, retrain
         if len(self.drift_manager.untrained_data) >= 1000:
             logger.info("Sufficient untrained data accumulated. Starting retraining...")
             self._trigger_retraining()
     
     def _trigger_retraining(self):
+        """
+        Combine reference_data with untrained_data, retrain the model, 
+        and reset the untrained_data buffer.
+        """
         try:
             all_data = pd.concat([
                 self.drift_manager.reference_data,
@@ -361,6 +418,7 @@ class StockPredictor:
             X_train, X_test, y_train, y_test = self.prepare_training_data(all_data)
             new_model = self.train_model(X_train, y_train)
             
+            # Update reference data and clear untrained buffer
             self.drift_manager.set_reference_data(all_data)
             self.drift_manager.untrained_data = pd.DataFrame()
             
@@ -370,7 +428,22 @@ class StockPredictor:
             logger.error(f"Retraining error: {str(e)}")
             raise
 
+    def handle_data_drift(self, data, drift_report):
+        """
+        (Optional) Custom logic to handle drift. 
+        For demonstration, we simply store the new data, 
+        then return a placeholder drift_analysis & action.
+        """
+        # Example: Evaluate severity or pick an action:
+        # For now, let's just say everything is 'HIGH' severity to test promotions.
+        drift_analysis = {'severity': 'HIGH'}
+        action_taken = {'type': 'PROMOTE_BETA'}
+        return drift_analysis, action_taken
+
     def train_model(self, X_train, y_train, model_type='xgboost'):
+        """
+        Utility that picks the right model training function.
+        """
         if model_type not in self.models:
             raise ValueError(f"Unknown model type: {model_type}")
             
@@ -448,6 +521,9 @@ class StockPredictor:
         return model, params
 
     def evaluate_models(self, X_test, y_test, models_dict):
+        """
+        Evaluate a dictionary of trained models on the same test set.
+        """
         evaluations = {}
         for model_name, model in models_dict.items():
             predictions = model.predict(X_test)
@@ -458,6 +534,7 @@ class StockPredictor:
                 'r2': r2_score(y_test, predictions)
             }
         return evaluations
+
 
 if __name__ == "__main__":
     try:
