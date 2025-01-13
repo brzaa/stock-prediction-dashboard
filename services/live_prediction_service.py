@@ -269,17 +269,31 @@ class StockPredictor:
         
         return X_train, X_test, y_train, y_test
 
+    ### MODIFIED: Smaller rolling windows ###
     def _prepare_features(self, data):
         """
-        Compute basic technical indicators; drop rows with NaN.
+        Compute technical indicators with smaller rolling windows to drop fewer rows.
         """
         features = pd.DataFrame(index=data.index)
-        features['SMA_5'] = data['close'].rolling(window=5).mean()
-        features['SMA_20'] = data['close'].rolling(window=20).mean()
-        features['RSI'] = self._calculate_rsi(data['close'])
-        features['MACD'] = self._calculate_macd(data['close'])
-        features['BB_upper'], features['BB_lower'] = self._calculate_bollinger_bands(data['close'])
-        features['Volume_SMA'] = data['volume'].rolling(window=20).mean()
+        
+        # Example smaller windows
+        features['SMA_3'] = data['close'].rolling(window=3).mean()
+        features['SMA_10'] = data['close'].rolling(window=10).mean()
+        
+        # RSI with period=7 instead of 14
+        features['RSI'] = self._calculate_rsi(data['close'], period=7)
+        
+        # MACD with faster settings: fast=6, slow=12, signal=3
+        features['MACD'] = self._calculate_macd(data['close'], fast=6, slow=12, signal=3)
+        
+        # Bollinger Bands with period=10, std_dev=1
+        features['BB_upper'], features['BB_lower'] = self._calculate_bollinger_bands(
+            data['close'], period=10, std_dev=1
+        )
+        
+        # Smaller volume rolling window of 10 days
+        features['Volume_SMA'] = data['volume'].rolling(window=10).mean()
+        
         features['Price_Range'] = data['high'] - data['low']
         
         features.dropna(inplace=True)
@@ -306,7 +320,7 @@ class StockPredictor:
 
     def _prepare_lstm_data(self, data, train_size=0.8, sequence_length=60):
         """
-        Prepare 3D sequences for LSTM.
+        Prepare 3D sequences for LSTM using the same smaller rolling windows.
         """
         features = self._prepare_features(data)  # 2D
         y = data['close'].reindex(features.index)
@@ -320,7 +334,6 @@ class StockPredictor:
         y_train_series, y_test_series = y[:split_idx], y[split_idx:]
         
         # Scale features
-        # Note: best practice is to fit scaler on training set only
         X_train_scaled = self.scaler.fit_transform(X_train_df)
         X_test_scaled = self.scaler.transform(X_test_df)
         
@@ -510,8 +523,7 @@ class StockPredictor:
             logger.warning("Skipping evaluation because X_test is empty.")
             return {}
         
-        # Transform test set
-        X_test_scaled = self.scaler.transform(X_test)  # Could fail if 0 rows
+        X_test_scaled = self.scaler.transform(X_test)
         preds = model.predict(X_test_scaled)
         return {
             'mse': mean_squared_error(y_test, preds),
