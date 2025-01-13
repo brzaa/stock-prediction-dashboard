@@ -1,0 +1,238 @@
+2025-01-13 19:14:40,380 - INFO - Starting Enhanced Stock Prediction Pipeline
+2025-01-13 19:14:40,398 - INFO - Compute Engine Metadata server call to universe/universe_domain returned 404, reason: Not Found
+
+2025-01-13 19:14:48,345 - INFO - Enhanced Stock Predictor initialized successfully
+2025-01-13 19:14:48,345 - INFO - Initial system status: {
+  "timestamp": "2025-01-13T19:14:48.345764",
+  "models_status": {
+    "lightgbm": {
+      "production": null,
+      "staging": null
+    },
+    "xgboost": {
+      "production": null,
+      "staging": null
+    },
+    "decision_tree": {
+      "production": null,
+      "staging": null
+    },
+    "lstm": {
+      "production": null,
+      "staging": null
+    }
+  },
+  "drift_status": {
+    "total_checks": 0,
+    "last_check": null
+  },
+  "data_status": {
+    "reference_data_size": 0,
+    "untrained_data_size": 0
+  },
+  "performance_metrics": {
+    "avg_detection_time": null,
+    "avg_memory_usage": null
+  }
+}
+2025-01-13 19:14:50,096 - INFO - Fetched 857 records from stock_data/MASB_latest.csv
+2025-01-13 19:14:50,097 - INFO - Fetched 857 records
+2025-01-13 19:15:08,302 - INFO - Successfully trained and versioned lightgbm model: v_1736795705_lightgbm
+2025-01-13 19:15:10,670 - INFO - Successfully trained and versioned xgboost model: v_1736795708_xgboost
+2025-01-13 19:15:12,229 - INFO - Successfully trained and versioned decision_tree model: v_1736795710_decision_tree
+2025-01-13 19:15:14,563 - INFO - Successfully trained and versioned lstm model: v_1736795712_lstm
+2025-01-13 19:15:14,563 - INFO - Initial model metrics:
+2025-01-13 19:15:14,563 - INFO - lightgbm: {'mse': 2395.696936809528, 'rmse': 48.94585719761712, 'mae': 26.248744657576783, 'r2': 0.8964277134584615, 'model_name': 'lightgbm', 'timestamp': '2025-01-13T19:14:40.379824'}
+2025-01-13 19:15:14,563 - INFO - xgboost: {'mse': 94.77130581022695, 'rmse': 9.735055511409627, 'mae': 3.2346404319585758, 'r2': 0.9959027869132877, 'model_name': 'xgboost', 'timestamp': '2025-01-13T19:14:40.379824'}
+2025-01-13 19:15:14,564 - INFO - decision_tree: {'mse': 212.83914728682095, 'rmse': 14.589007755389705, 'mae': 5.290697674418589, 'r2': 0.9907984032490333, 'model_name': 'decision_tree', 'timestamp': '2025-01-13T19:14:40.379824'}
+2025-01-13 19:15:14,564 - INFO - lstm: {'mse': 3374697.6923685316, 'rmse': 1837.0350275290157, 'mae': 1406.2868503304414, 'r2': -144.89706695144125, 'model_name': 'lstm', 'timestamp': '2025-01-13T19:14:40.379824'}
+2025-01-13 19:15:16,227 - INFO - Fetched 857 records from stock_data/MASB_latest.csv
+2025-01-13 19:15:19,419 - INFO - Current system status: {
+  "timestamp": "2025-01-13T19:15:19.419285",
+  "models_status": {
+    "lightgbm": {
+      "production": null,
+      "staging": null
+    },
+    "xgboost": {
+      "production": null,
+      "staging": null
+    },
+    "decision_tree": {
+      "production": null,
+      "staging": null
+    },
+    "lstm": {
+      "production": null,
+      "staging": null
+    }
+  },
+  "drift_status": {
+    "total_checks": 0,
+    "last_check": null
+  },
+  "data_status": {
+    "reference_data_size": 0,
+    "untrained_data_size": 0
+  },
+  "performance_metrics": {
+    "avg_detection_time": null,
+    "avg_memory_usage": null
+  }
+}
+2025-01-13 19:15:19,419 - INFO - lightgbm predictions summary: mean=3441.70, std=108.59
+2025-01-13 19:15:19,420 - INFO - xgboost predictions summary: mean=3438.90, std=118.00
+2025-01-13 19:15:19,420 - INFO - decision_tree predictions summary: mean=3438.38, std=120.11
+2025-01-13 19:15:19,420 - INFO - lstm predictions summary: mean=3293.68, std=1124.57
+2025-01-13 19:20:21,437 - INFO - Fetched 857 records from stock_data/MASB_latest.csv
+2025-01-13 19:20:24,688 - INFO - Current system status: {
+  "timestamp": "2025-01-13T19:20:24.688685",
+  "models_status": {
+    "lightgbm": {
+      "production": null,
+      "staging": null
+    },
+    "xgboost": {
+      "production": null,
+      "staging": null
+    },
+    "decision_tree": {
+      "production": null,
+      "staging": null
+    },
+    "lstm": {
+      "production": null,
+      "staging": null
+    }
+  },
+  "drift_status": {
+    "total_checks": 0,
+    "last_check": null
+  },
+  "data_status": {
+    "reference_data_size": 0,
+    "untrained_data_size": 0
+  },
+  "performance_metrics": {
+    "avg_detection_time": null,
+    "avg_memory_usage": null
+  }
+}
+2025-01-13 19:20:24,689 - INFO - lightgbm predictions summary: mean=3441.70, std=108.59
+2025-01-13 19:20:24,689 - INFO - xgboost predictions summary: mean=3438.90, std=118.00
+2025-01-13 19:20:24,689 - INFO - decision_tree predictions summary: mean=3438.38, std=120.11
+2025-01-13 19:20:24,689 - INFO - lstm predictions summary: mean=3293.68, std=1124.57
+2025-01-13 19:25:26,716 - INFO - Fetched 857 records from stock_data/MASB_latest.csv
+2025-01-13 19:25:29,972 - INFO - Current system status: {
+  "timestamp": "2025-01-13T19:25:29.971852",
+  "models_status": {
+    "lightgbm": {
+      "production": null,
+      "staging": null
+    },
+    "xgboost": {
+      "production": null,
+      "staging": null
+    },
+    "decision_tree": {
+      "production": null,
+      "staging": null
+    },
+    "lstm": {
+      "production": null,
+      "staging": null
+    }
+  },
+  "drift_status": {
+    "total_checks": 0,
+    "last_check": null
+  },
+  "data_status": {
+    "reference_data_size": 0,
+    "untrained_data_size": 0
+  },
+  "performance_metrics": {
+    "avg_detection_time": null,
+    "avg_memory_usage": null
+  }
+}
+2025-01-13 19:25:29,972 - INFO - lightgbm predictions summary: mean=3441.70, std=108.59
+2025-01-13 19:25:29,972 - INFO - xgboost predictions summary: mean=3438.90, std=118.00
+2025-01-13 19:25:29,972 - INFO - decision_tree predictions summary: mean=3438.38, std=120.11
+2025-01-13 19:25:29,972 - INFO - lstm predictions summary: mean=3293.68, std=1124.57
+2025-01-13 19:30:33,329 - INFO - Fetched 857 records from stock_data/MASB_latest.csv
+2025-01-13 19:30:36,583 - INFO - Current system status: {
+  "timestamp": "2025-01-13T19:30:36.583562",
+  "models_status": {
+    "lightgbm": {
+      "production": null,
+      "staging": null
+    },
+    "xgboost": {
+      "production": null,
+      "staging": null
+    },
+    "decision_tree": {
+      "production": null,
+      "staging": null
+    },
+    "lstm": {
+      "production": null,
+      "staging": null
+    }
+  },
+  "drift_status": {
+    "total_checks": 0,
+    "last_check": null
+  },
+  "data_status": {
+    "reference_data_size": 0,
+    "untrained_data_size": 0
+  },
+  "performance_metrics": {
+    "avg_detection_time": null,
+    "avg_memory_usage": null
+  }
+}
+2025-01-13 19:30:36,584 - INFO - lightgbm predictions summary: mean=3441.70, std=108.59
+2025-01-13 19:30:36,584 - INFO - xgboost predictions summary: mean=3438.90, std=118.00
+2025-01-13 19:30:36,584 - INFO - decision_tree predictions summary: mean=3438.38, std=120.11
+2025-01-13 19:30:36,584 - INFO - lstm predictions summary: mean=3293.68, std=1124.57
+2025-01-13 19:35:38,534 - INFO - Fetched 857 records from stock_data/MASB_latest.csv
+2025-01-13 19:35:41,438 - INFO - Current system status: {
+  "timestamp": "2025-01-13T19:35:41.438155",
+  "models_status": {
+    "lightgbm": {
+      "production": null,
+      "staging": null
+    },
+    "xgboost": {
+      "production": null,
+      "staging": null
+    },
+    "decision_tree": {
+      "production": null,
+      "staging": null
+    },
+    "lstm": {
+      "production": null,
+      "staging": null
+    }
+  },
+  "drift_status": {
+    "total_checks": 0,
+    "last_check": null
+  },
+  "data_status": {
+    "reference_data_size": 0,
+    "untrained_data_size": 0
+  },
+  "performance_metrics": {
+    "avg_detection_time": null,
+    "avg_memory_usage": null
+  }
+}
+2025-01-13 19:35:41,438 - INFO - lightgbm predictions summary: mean=3441.70, std=108.59
+2025-01-13 19:35:41,438 - INFO - xgboost predictions summary: mean=3438.90, std=118.00
+2025-01-13 19:35:41,439 - INFO - decision_tree predictions summary: mean=3438.38, std=120.11
+2025-01-13 19:35:41,439 - INFO - lstm predictions summary: mean=3293.68, std=1124.57
