@@ -242,6 +242,64 @@ class StockPredictor:
         sma = prices.rolling(window=period).mean()
         std = prices.rolling(window=period).std()
         return sma + (std_dev * std), sma - (std_dev * std)
+        
+    def _prepare_tree_based_data(self, data, train_size=0.8):
+        """Prepare data for tree-based models"""
+        try:
+            logger.info("Preparing data for tree-based models...")
+            
+            # Calculate features
+            X = self._prepare_features(data)
+            y = data['close']
+            
+            # Split data
+            train_size = int(len(data) * train_size)
+            train_data = data[:train_size]
+            test_data = data[train_size:]
+            
+            # Prepare feature sets
+            X_train = X[:train_size]
+            X_test = X[train_size:]
+            y_train = y[:train_size]
+            y_test = y[train_size:]
+            
+            # Scale features
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            X_test_scaled = self.scaler.transform(X_test)
+            
+            logger.info(f"Data preparation completed. Training set shape: {X_train_scaled.shape}")
+            return X_train_scaled, X_test_scaled, y_train, y_test, test_data.index
+            
+        except Exception as e:
+            logger.error(f"Error in data preparation: {str(e)}")
+            raise
+            
+    def _prepare_lstm_data(self, data, train_size=0.8, sequence_length=60):
+        """Prepare data specifically for LSTM"""
+        try:
+            logger.info("Preparing data for LSTM...")
+            
+            # Get scaled data from tree-based preparation
+            X_train_scaled, X_test_scaled, y_train, y_test, test_dates = self._prepare_tree_based_data(data, train_size)
+            
+            # Create sequences for LSTM
+            def create_sequences(X, y, sequence_length):
+                Xs, ys = [], []
+                for i in range(len(X) - sequence_length):
+                    Xs.append(X[i:(i + sequence_length)])
+                    ys.append(y[i + sequence_length])
+                return np.array(Xs), np.array(ys)
+            
+            # Create sequence data
+            X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train.values, sequence_length)
+            X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test.values, sequence_length)
+            
+            logger.info(f"LSTM data preparation completed. Training sequence shape: {X_train_seq.shape}")
+            return X_train_seq, X_test_seq, y_train_seq, y_test_seq, test_dates
+            
+        except Exception as e:
+            logger.error(f"Error preparing LSTM data: {str(e)}")
+            raise
 
     def _handle_alpha_drift(self, drift_metrics):
         drift_log = {
