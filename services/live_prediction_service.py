@@ -301,6 +301,38 @@ class StockPredictor:
             logger.error(f"Error preparing LSTM data: {str(e)}")
             raise
 
+    def fetch_stock_data(self):
+        """Fetch stock data from GCS and process it"""
+        try:
+            logger.info("Fetching stock data from GCS")
+            blob = self.bucket.blob('stock_data/MASB_latest.csv')
+            
+            if not blob.exists():
+                raise FileNotFoundError("Stock data file not found in GCS")
+            
+            logger.info("Downloading stock data file...")
+            local_file = '/tmp/MASB_latest.csv'
+            blob.download_to_filename(local_file)
+            
+            logger.info("Reading stock data into DataFrame...")
+            data = pd.read_csv(local_file, parse_dates=['date'])
+            data.set_index('date', inplace=True)
+            
+            # Check for drift if reference exists
+            if self.drift_manager.reference_data is not None:
+                drift_detected, drift_report = self.drift_manager.check_alpha_drift(data)
+                if drift_detected:
+                    logger.warning("Data drift detected")
+                    drift_analysis, action_taken = self.handle_data_drift(data, drift_report)
+                    logger.info(f"Drift handling completed. Action: {action_taken['type']}")
+            else:
+                self.drift_manager.set_reference_data(data)
+            
+            return data
+        except Exception as e:
+            logger.error(f"Error fetching stock data: {str(e)}")
+            raise
+
     def _handle_alpha_drift(self, drift_metrics):
         drift_log = {
             'timestamp': datetime.now().isoformat(),
