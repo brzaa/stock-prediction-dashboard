@@ -66,12 +66,10 @@ class DataDriftManager:
                 
                 # Calculate drift
                 drift_val = abs(new_stats['mean'] - ref_stats['mean']) / ref_stats['std']
-                
-                # Convert to native Python types:
+                # Convert to native Python types
                 drift_magnitude = float(drift_val) if not pd.isna(drift_val) else 0.0
                 is_significant = bool(drift_magnitude > self.alpha_drift_threshold)
                 
-                # Build a fully JSON-serializable dictionary
                 drift_metrics[column] = {
                     'drift_magnitude': drift_magnitude,
                     'is_significant': is_significant,
@@ -214,12 +212,16 @@ class StockPredictor:
     def prepare_training_data(self, data, train_size=0.8):
         """
         Prepares training data, checking for alpha drift among the latest 30 days.
-        If drift is detected, the new data is stored separately as untrained.
+        If drift is detected, the new data is stored separately as untrained and only old_data is used.
+        
+        Returns (X_train, X_test, y_train, y_test). 
+        If there's insufficient data after dropna(), returns None for all four.
         """
         cutoff_date = data.index.max() - pd.Timedelta(days=30)
         old_data = data[data.index <= cutoff_date]
         new_data = data[data.index > cutoff_date]
         
+        # Add new data to the drift buffer
         self.drift_manager.add_new_data(new_data)
         
         has_drift, drift_metrics = self.drift_manager.check_alpha_drift(new_data)
@@ -230,19 +232,32 @@ class StockPredictor:
             train_data = old_data
         else:
             train_data = data
-            
-        X = self._prepare_features(train_data)
-        y = train_data['close']
         
+        # Build features (rolling windows, etc.) and drop NaNs
+        X = self._prepare_features(train_data)
+        # Align y with X's index
+        y = train_data['close'].reindex(X.index)
+        
+        # If the dataset ended up empty after feature engineering, abort training
+        if len(X) == 0 or len(y) == 0:
+            logger.error("Not enough valid rows in train_data after dropna(). Cannot train.")
+            return None, None, None, None
+
         if has_drift:
             X_train = X[X.index <= cutoff_date]
             X_test = X[X.index > cutoff_date]
             y_train = y[y.index <= cutoff_date]
             y_test = y[y.index > cutoff_date]
         else:
+            # Standard train/test split
             train_idx = int(len(X) * train_size)
             X_train, X_test = X[:train_idx], X[train_idx:]
             y_train, y_test = y[:train_idx], y[train_idx:]
+        
+        # Final check: if either train set is empty, skip training
+        if len(X_train) == 0 or len(y_train) == 0:
+            logger.error("X_train or y_train is empty. Skipping training.")
+            return None, None, None, None
         
         return X_train, X_test, y_train, y_test
 
@@ -261,7 +276,9 @@ class StockPredictor:
         features['Volume_SMA'] = data['volume'].rolling(window=20).mean()
         features['Price_Range'] = data['high'] - data['low']
         
-        return features.dropna()
+        # Drop rows with NaN (particularly from rolling windows)
+        features.dropna(inplace=True)
+        return features
 
     def _calculate_rsi(self, prices, period=14):
         delta = prices.diff()
@@ -290,14 +307,14 @@ class StockPredictor:
             
             # Calculate features
             X = self._prepare_features(data)
-            y = data['close']
+            y = data['close'].reindex(X.index)
+            
+            if len(X) == 0 or len(y) == 0:
+                logger.error("No valid rows after feature engineering for tree-based. Returning None.")
+                return None, None, None, None, None
             
             # Split data
-            train_size_int = int(len(data) * train_size)
-            train_data = data[:train_size_int]
-            test_data = data[train_size_int:]
-            
-            # Prepare feature sets
+            train_size_int = int(len(X) * train_size)
             X_train = X[:train_size_int]
             X_test = X[train_size_int:]
             y_train = y[:train_size_int]
@@ -308,7 +325,7 @@ class StockPredictor:
             X_test_scaled = self.scaler.transform(X_test)
             
             logger.info(f"Data preparation completed. Training set shape: {X_train_scaled.shape}")
-            return X_train_scaled, X_test_scaled, y_train, y_test, test_data.index
+            return X_train_scaled, X_test_scaled, y_train, y_test, X[test_size_int:].index
             
         except Exception as e:
             logger.error(f"Error in data preparation: {str(e)}")
@@ -321,8 +338,16 @@ class StockPredictor:
         try:
             logger.info("Preparing data for LSTM...")
             
-            # Get scaled data from tree-based preparation
-            X_train_scaled, X_test_scaled, y_train, y_test, test_dates = self._prepare_tree_based_data(data, train_size)
+            # First, prepare data as if it's tree-based, to scale & align
+            prepared = self._prepare_tree_based_data(data, train_size)
+            if prepared is None:
+                return None, None, None, None, None
+            
+            X_train_scaled, X_test_scaled, y_train, y_test, test_dates = prepared
+            
+            if X_train_scaled is None or len(X_train_scaled) == 0:
+                logger.error("No valid rows for LSTM training after preparing data. Returning None.")
+                return None, None, None, None, None
             
             # Create sequences for LSTM
             def create_sequences(X, y, seq_length):
@@ -384,7 +409,7 @@ class StockPredictor:
         """
         drift_log = {
             'timestamp': datetime.now().isoformat(),
-            'drift_metrics': drift_metrics,  # Already converted to Python types
+            'drift_metrics': drift_metrics,  # Already converted to Python-native floats/bools
             'action_taken': 'separate_training'
         }
         
@@ -416,6 +441,10 @@ class StockPredictor:
             ]).sort_index()
             
             X_train, X_test, y_train, y_test = self.prepare_training_data(all_data)
+            if X_train is None or len(X_train) == 0:
+                logger.warning("Cannot retrain model because training set is empty.")
+                return None
+
             new_model = self.train_model(X_train, y_train)
             
             # Update reference data and clear untrained buffer
@@ -431,11 +460,9 @@ class StockPredictor:
     def handle_data_drift(self, data, drift_report):
         """
         (Optional) Custom logic to handle drift. 
-        For demonstration, we simply store the new data, 
+        For demonstration, we store the new data and 
         then return a placeholder drift_analysis & action.
         """
-        # Example: Evaluate severity or pick an action:
-        # For now, let's just say everything is 'HIGH' severity to test promotions.
         drift_analysis = {'severity': 'HIGH'}
         action_taken = {'type': 'PROMOTE_BETA'}
         return drift_analysis, action_taken
@@ -485,6 +512,7 @@ class StockPredictor:
         return model, params
 
     def train_lstm(self, X_train, y_train):
+        # For LSTM, X_train should be 3D if you've already created sequences.
         params = {
             "lstm_units": 128,
             "dropout_rate": 0.3,
@@ -545,17 +573,21 @@ if __name__ == "__main__":
         data = predictor.fetch_stock_data()
         X_train, X_test, y_train, y_test = predictor.prepare_training_data(data)
         
-        # Train models
-        trained_models = {}
-        for model_type in predictor.models:
-            logger.info(f"Training {model_type} model...")
-            model, _ = predictor.train_model(X_train, y_train, model_type)
-            trained_models[model_type] = model
-        
-        # Evaluate models
-        evaluations = predictor.evaluate_models(X_test, y_test, trained_models)
-        logger.info("Model evaluations:")
-        logger.info(json.dumps(evaluations, indent=2))
+        # If we don't have a valid training set, skip the training & exit
+        if X_train is None or X_test is None or y_train is None or y_test is None:
+            logger.warning("Skipping training because training set is empty or None.")
+        else:
+            # Train models
+            trained_models = {}
+            for model_type in predictor.models:
+                logger.info(f"Training {model_type} model...")
+                model, _ = predictor.train_model(X_train, y_train, model_type)
+                trained_models[model_type] = model
+            
+            # Evaluate models
+            evaluations = predictor.evaluate_models(X_test, y_test, trained_models)
+            logger.info("Model evaluations:")
+            logger.info(json.dumps(evaluations, indent=2))
         
         logger.info("Stock Prediction Pipeline completed successfully")
         
