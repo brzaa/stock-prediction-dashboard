@@ -46,8 +46,8 @@ class ModelMetrics:
     rmse: float
     mae: float
     r2: float
+    model_name: str
     timestamp: str = datetime.now().isoformat()
-
 
 class EnhancedDataDriftManager:
     def __init__(self, bucket: storage.bucket.Bucket):
@@ -77,7 +77,6 @@ class EnhancedDataDriftManager:
             if self.reference_data is None or len(new_data) < self.thresholds.min_data_points:
                 return False, drift_report
 
-            # Check different types of drift
             price_drift = self._check_price_drift(new_data)
             volume_drift = self._check_volume_drift(new_data)
             distribution_drift = self._check_distribution_drift(new_data)
@@ -88,7 +87,6 @@ class EnhancedDataDriftManager:
                 'distribution_drift': distribution_drift
             }
 
-            # Determine severity
             if any(d > self.thresholds.alpha for d in [price_drift, volume_drift, distribution_drift]):
                 drift_report['severity'] = 'HIGH'
                 drift_detected = True
@@ -96,7 +94,6 @@ class EnhancedDataDriftManager:
                 drift_report['severity'] = 'MEDIUM'
                 drift_detected = True
 
-            # Log performance metrics
             self._log_performance_metrics(
                 detection_time=time.time() - start_time,
                 memory_usage=psutil.Process().memory_info().rss / 1024 / 1024
@@ -128,7 +125,6 @@ class EnhancedDataDriftManager:
 
         ref_vol = self.reference_data['volume'].mean()
         new_vol = new_data['volume'].mean()
-        
         return abs(new_vol - ref_vol) / ref_vol
 
     def _check_distribution_drift(self, new_data: pd.DataFrame) -> float:
@@ -159,7 +155,6 @@ class EnhancedDataDriftManager:
 
     def _store_drift_history(self, drift_report: Dict[str, Any]):
         self.drift_history.append(drift_report)
-        
         blob = self.bucket.blob(
             f'drift_history/{datetime.now().strftime("%Y/%m/%d/drift_%H%M%S.json")}'
         )
@@ -189,7 +184,7 @@ class EnhancedModelVersionControl:
         self.promotion_history: List[Dict] = []
 
     def create_version(self, model: Any, metrics: ModelMetrics, metadata: Dict[str, Any]) -> str:
-        version_id = f"v_{int(time.time())}"
+        version_id = f"v_{int(time.time())}_{metadata['model_type']}"
         version_info = {
             'id': version_id,
             'timestamp': datetime.now().isoformat(),
@@ -200,7 +195,6 @@ class EnhancedModelVersionControl:
 
         self._store_version_info(version_id, version_info)
         self._store_model_artifact(version_id, model)
-        
         return version_id
 
     def promote_version(self, version_id: str, target_env: str, justification: str) -> bool:
@@ -222,7 +216,6 @@ class EnhancedModelVersionControl:
 
             version_info['environment'] = target_env
             self._store_version_info(version_id, version_info)
-            
             self._store_promotion_record(promotion_info)
             self.current_version[target_env] = version_id
             return True
@@ -253,7 +246,6 @@ class EnhancedModelVersionControl:
             return None
         return json.loads(blob.download_as_string())
 
-
 class EnhancedStockPredictor:
     def __init__(self, bucket_name: str = "mlops-brza"):
         self.bucket_name = bucket_name
@@ -263,9 +255,9 @@ class EnhancedStockPredictor:
         self.drift_manager = EnhancedDataDriftManager(self.bucket)
         self.version_control = EnhancedModelVersionControl(self.bucket)
         
-        self.scaler = StandardScaler()
-        self.current_model = None
-        self.model_metrics = None
+        self.scalers = {}
+        self.current_models = {}
+        self.model_metrics = {}
 
         self._initialize_storage()
         logger.info("Enhanced Stock Predictor initialized successfully")
@@ -276,21 +268,16 @@ class EnhancedStockPredictor:
             'drift_history/',
             'performance_metrics/',
             'promotions/',
-            'predictions/'
+            'predictions/',
+            'training_metrics/',
+            'evaluation_metrics/'
         ]
         for folder in required_folders:
             blob = self.bucket.blob(folder)
             if not blob.exists():
                 blob.upload_from_string('')
 
-    # -------------------------------------------------------------------------
-    # ADD THIS METHOD:
-    # -------------------------------------------------------------------------
     def fetch_stock_data(self) -> pd.DataFrame:
-        """
-        Example method to download stock data CSV from GCS, e.g. 'stock_data/MASB_latest.csv'.
-        Adjust path or filename as needed to match your actual data.
-        """
         try:
             blob = self.bucket.blob('stock_data/MASB_latest.csv')
             if not blob.exists():
@@ -309,96 +296,91 @@ class EnhancedStockPredictor:
             logger.error(f"Error fetching stock data: {str(e)}")
             raise
 
-    def train_and_evaluate(self, data: pd.DataFrame) -> Tuple[Any, ModelMetrics]:
-        try:
-            X_train, X_test, y_train, y_test = self._prepare_training_data(data)
-            model = self._train_model(X_train, y_train)
-            metrics = self._evaluate_model(model, X_test, y_test)
-
-            version_id = self.version_control.create_version(
-                model=model,
-                metrics=metrics,
-                metadata={
-                    'data_points': len(data),
-                    'training_date': datetime.now().isoformat(),
-                    'feature_columns': list(X_train.columns)
-                }
-            )
-
-            logger.info(f"Successfully trained and versioned model: {version_id}")
-            return model, metrics
-
-        except Exception as e:
-            logger.error(f"Error in train_and_evaluate: {str(e)}")
-            raise
-
-    def predict(self, data: pd.DataFrame) -> Tuple[np.ndarray, Dict[str, Any]]:
-        try:
-            drift_detected, drift_report = self.drift_manager.check_drift(data)
-            
-            if drift_detected:
-                logger.warning("Drift detected during prediction")
-                if drift_report['severity'] == 'HIGH':
-                    self._handle_high_severity_drift(data)
-            
-            prediction = self._make_prediction(data)
-            self._log_prediction(data, prediction, drift_report)
-            
-            return prediction, drift_report
-
-        except Exception as e:
-            logger.error(f"Error in predict: {str(e)}")
-            raise
-
-    def _handle_high_severity_drift(self, data: pd.DataFrame):
-        logger.info("Handling high severity drift")
-        new_model, metrics = self.train_and_evaluate(data)
-        version_id = self.version_control.create_version(
-            model=new_model,
-            metrics=metrics,
-            metadata={'drift_triggered': True}
+    def _train_lightgbm(self, X_train_scaled: np.ndarray, y_train: pd.Series) -> LGBMRegressor:
+        model = LGBMRegressor(
+            objective='regression',
+            max_depth=7,
+            learning_rate=0.05,
+            n_estimators=100,
+            num_leaves=31
         )
+        model.fit(X_train_scaled, y_train)
+        return model
 
-        if metrics.r2 > 0.8:
-            self.version_control.promote_version(
-                version_id=version_id,
-                target_env='staging',
-                justification='Drift-triggered retraining with good metrics'
-            )
-
-    def _log_prediction(self, data: pd.DataFrame, prediction: np.ndarray, drift_report: Dict[str, Any]):
-        prediction_log = {
-            'timestamp': datetime.now().isoformat(),
-            'prediction_summary': {
-                'mean': float(np.mean(prediction)),
-                'std': float(np.std(prediction)),
-                'min': float(np.min(prediction)),
-                'max': float(np.max(prediction))
-            },
-            'drift_detected': drift_report['severity'] != 'NONE',
-            'model_version': self.version_control.current_version['production']
-        }
-
-        blob = self.bucket.blob(
-            f'predictions/{datetime.now().strftime("%Y/%m/%d/pred_%H%M%S.json")}'
+    def _train_xgboost(self, X_train_scaled: np.ndarray, y_train: pd.Series) -> xgb.XGBRegressor:
+        model = xgb.XGBRegressor(
+            max_depth=7,
+            learning_rate=0.05,
+            n_estimators=100,
+            objective='reg:squarederror'
         )
-        blob.upload_from_string(json.dumps(prediction_log))
+        model.fit(X_train_scaled, y_train)
+        return model
 
-    def _train_model(self, X_train: pd.DataFrame, y_train: pd.Series) -> Any:
+    def _train_decision_tree(self, X_train_scaled: np.ndarray, y_train: pd.Series) -> DecisionTreeRegressor:
+        model = DecisionTreeRegressor(
+            max_depth=10,
+            min_samples_split=5,
+            min_samples_leaf=2
+        )
+        model.fit(X_train_scaled, y_train)
+        return model
+
+    def _train_lstm(self, X_train_scaled: np.ndarray, y_train: pd.Series) -> Sequential:
+        X_reshaped = X_train_scaled.reshape((X_train_scaled.shape[0], 1, X_train_scaled.shape[1]))
+        
+        model = Sequential([
+            LSTM(50, activation='relu', input_shape=(1, X_train_scaled.shape[1])),
+            Dropout(0.2),
+            Dense(25, activation='relu'),
+            Dense(1)
+        ])
+        
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+        
+        early_stopping = EarlyStopping(
+            monitor='val_loss',
+            patience=10,
+            restore_best_weights=True
+        )
+        
+        reduce_lr = ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.2,
+            patience=5
+        )
+        
+        model.fit(
+            X_reshaped, y_train,
+            epochs=100,
+            batch_size=32,
+            validation_split=0.2,
+            callbacks=[early_stopping, reduce_lr],
+            verbose=0
+        )
+        
+        return model
+
+    def _train_model(self, X_train: pd.DataFrame, y_train: pd.Series) -> Dict[str, Any]:
         start_time = time.time()
         memory_before = psutil.Process().memory_info().rss
-
+        
         try:
-            X_train_scaled = self.scaler.fit_transform(X_train)
-            model = LGBMRegressor(
-                objective='regression',
-                max_depth=7,
-                learning_rate=0.05,
-                n_estimators=100,
-                num_leaves=31
-            )
-            model.fit(X_train_scaled, y_train)
-
+            models = {}
+            training_metrics = {}
+            X_train_scaled = {}
+            
+            # Initialize scalers for each model
+            for model_name in ['lightgbm', 'xgboost', 'decision_tree', 'lstm']:
+                self.scalers[model_name] = StandardScaler()
+                X_train_scaled[model_name] = self.scalers[model_name].fit_transform(X_train)
+            
+            # Train each model
+            models['lightgbm'] = self._train_lightgbm(X_train_scaled['lightgbm'], y_train)
+            models['xgboost'] = self._train_xgboost(X_train_scaled['xgboost'], y_train)
+            models['decision_tree'] = self._train_decision_tree(X_train_scaled['decision_tree'], y_train)
+            models['lstm'] = self._train_lstm(X_train_scaled['lstm'], y_train)
+            
             training_metrics = {
                 'timestamp': datetime.now().isoformat(),
                 'duration': time.time() - start_time,
@@ -412,45 +394,86 @@ class EnhancedStockPredictor:
             )
             blob.upload_from_string(json.dumps(training_metrics))
 
-            return model
+            return models
 
         except Exception as e:
             logger.error(f"Error in model training: {str(e)}")
             raise
 
-    def _evaluate_model(self, model: Any, X_test: pd.DataFrame, y_test: pd.Series) -> ModelMetrics:
+    def _evaluate_model(self, models: Dict[str, Any], X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, ModelMetrics]:
         try:
-            X_test_scaled = self.scaler.transform(X_test)
-            predictions = model.predict(X_test_scaled)
+            metrics = {}
+            
+            for model_name, model in models.items():
+                X_test_scaled = self.scalers[model_name].transform(X_test)
+                
+                # For LSTM, reshape the input
+                if model_name == 'lstm':
+                    X_test_scaled = X_test_scaled.reshape((X_test_scaled.shape[0], 1, X_test_scaled.shape[1]))
+                
+                predictions = model.predict(X_test_scaled)
+                
+                metrics[model_name] = ModelMetrics(
+                    mse=mean_squared_error(y_test, predictions),
+                    rmse=np.sqrt(mean_squared_error(y_test, predictions)),
+                    mae=mean_absolute_error(y_test, predictions),
+                    r2=r2_score(y_test, predictions),
+                    model_name=model_name
+                )
 
-            metrics = ModelMetrics(
-                mse=mean_squared_error(y_test, predictions),
-                rmse=np.sqrt(mean_squared_error(y_test, predictions)),
-                mae=mean_absolute_error(y_test, predictions),
-                r2=r2_score(y_test, predictions)
-            )
-
-            eval_log = {
-                'timestamp': datetime.now().isoformat(),
-                'metrics': asdict(metrics),
-                'test_size': len(X_test),
-                'prediction_stats': {
-                    'mean': float(np.mean(predictions)),
-                    'std': float(np.std(predictions)),
-                    'min': float(np.min(predictions)),
-                    'max': float(np.max(predictions))
+                eval_log = {
+                    'timestamp': datetime.now().isoformat(),
+                    'model_name': model_name,
+                    'metrics': asdict(metrics[model_name]),
+                    'test_size': len(X_test),
+                    'prediction_stats': {
+                        'mean': float(np.mean(predictions)),
+                        'std': float(np.std(predictions)),
+                        'min': float(np.min(predictions)),
+                        'max': float(np.max(predictions))
+                    }
                 }
-            }
 
-            blob = self.bucket.blob(
-                f'evaluation_metrics/{datetime.now().strftime("%Y/%m/%d/eval_%H%M%S.json")}'
-            )
-            blob.upload_from_string(json.dumps(eval_log))
+                blob = self.bucket.blob(
+                    f'evaluation_metrics/{datetime.now().strftime("%Y/%m/%d/eval_%H%M%S_{model_name}.json")}'
+                )
+                blob.upload_from_string(json.dumps(eval_log))
 
             return metrics
 
         except Exception as e:
             logger.error(f"Error in model evaluation: {str(e)}")
+            raise
+
+    def train_and_evaluate(self, data: pd.DataFrame) -> Tuple[Dict[str, Any], Dict[str, ModelMetrics]]:
+        try:
+            X_train, X_test, y_train, y_test = self._prepare_training_data(data)
+            models = self._train_model(X_train, y_train)
+            metrics = self._evaluate_model(models, X_test, y_test)
+
+            # Store best model across all types
+            best_model_name = max(metrics.items(), key=lambda x: x[1].r2)[0]
+            self.current_models = models  # Store all models
+            
+            # Create version for each model
+            for model_name, model in models.items():
+                version_id = self.version_control.create_version(
+                    model=model,
+                    metrics=metrics[model_name],
+                    metadata={
+                        'model_type': model_name,
+                        'data_points': len(data),
+                        'training_date': datetime.now().isoformat(),
+                        'feature_columns': list(X_train.columns),
+                        'is_best_model': model_name == best_model_name
+                    }
+                )
+                logger.info(f"Successfully trained and versioned {model_name} model: {version_id}")
+
+            return models, metrics
+
+        except Exception as e:
+            logger.error(f"Error in train_and_evaluate: {str(e)}")
             raise
 
     def _prepare_training_data(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
@@ -463,21 +486,91 @@ class EnhancedStockPredictor:
         y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
         return X_train, X_test, y_train, y_test
 
-    def _make_prediction(self, data: pd.DataFrame) -> np.ndarray:
-        if self.current_model is None:
-            logger.warning("No current model loaded; returning zeros.")
-            return np.zeros(len(data))
+    def predict(self, data: pd.DataFrame) -> Dict[str, Tuple[np.ndarray, Dict[str, Any]]]:
+        try:
+            drift_detected, drift_report = self.drift_manager.check_drift(data)
+            predictions = {}
+            
+            for model_name, model in self.current_models.items():
+                if model is None:
+                    logger.warning(f"No current model loaded for {model_name}; returning zeros.")
+                    predictions[model_name] = (np.zeros(len(data)), drift_report)
+                    continue
 
-        X = data.drop('close', axis=1, errors='ignore')
-        X_scaled = self.scaler.transform(X)
-        return self.current_model.predict(X_scaled)
+                X = data.drop('close', axis=1, errors='ignore')
+                X_scaled = self.scalers[model_name].transform(X)
+                
+                # Reshape for LSTM
+                if model_name == 'lstm':
+                    X_scaled = X_scaled.reshape((X_scaled.shape[0], 1, X_scaled.shape[1]))
+                
+                pred = model.predict(X_scaled)
+                predictions[model_name] = (pred, drift_report)
+                
+                self._log_prediction(data, pred, drift_report, model_name)
+            
+            if drift_detected and drift_report['severity'] == 'HIGH':
+                self._handle_high_severity_drift(data)
+            
+            return predictions
+
+        except Exception as e:
+            logger.error(f"Error in predict: {str(e)}")
+            raise
+
+    def _handle_high_severity_drift(self, data: pd.DataFrame):
+        logger.info("Handling high severity drift - retraining all models")
+        new_models, metrics = self.train_and_evaluate(data)
+        
+        # Find best performing model
+        best_model_name = max(metrics.items(), key=lambda x: x[1].r2)[0]
+        best_metrics = metrics[best_model_name]
+        
+        if best_metrics.r2 > 0.8:  # You can adjust this threshold
+            version_id = self.version_control.create_version(
+                model=new_models[best_model_name],
+                metrics=best_metrics,
+                metadata={
+                    'model_type': best_model_name,
+                    'drift_triggered': True,
+                    'is_best_model': True
+                }
+            )
+            
+            self.version_control.promote_version(
+                version_id=version_id,
+                target_env='staging',
+                justification=f'Drift-triggered retraining with good metrics (R² = {best_metrics.r2:.3f})'
+            )
+
+    def _log_prediction(self, data: pd.DataFrame, prediction: np.ndarray, drift_report: Dict[str, Any], model_name: str):
+        prediction_log = {
+            'timestamp': datetime.now().isoformat(),
+            'model_name': model_name,
+            'prediction_summary': {
+                'mean': float(np.mean(prediction)),
+                'std': float(np.std(prediction)),
+                'min': float(np.min(prediction)),
+                'max': float(np.max(prediction))
+            },
+            'drift_detected': drift_report['severity'] != 'NONE',
+            'model_version': self.version_control.current_version['production']
+        }
+
+        blob = self.bucket.blob(
+            f'predictions/{datetime.now().strftime("%Y/%m/%d/pred_%H%M%S_{model_name}.json")}'
+        )
+        blob.upload_from_string(json.dumps(prediction_log))
 
     def get_system_status(self) -> Dict[str, Any]:
         return {
             'timestamp': datetime.now().isoformat(),
-            'current_model': {
-                'production': self.version_control.current_version['production'],
-                'staging': self.version_control.current_version['staging']
+            'models_status': {
+                model_name: {
+                    'production': self.version_control.current_version['production'],
+                    'staging': self.version_control.current_version['staging']
+                }
+                for model_name in ['lightgbm', 'xgboost', 'decision_tree', 'lstm']
             },
             'drift_status': {
                 'total_checks': len(self.drift_manager.drift_history),
@@ -498,28 +591,35 @@ def main():
     try:
         logger.info("Starting Enhanced Stock Prediction Pipeline")
         
-        # Create an instance with the known existing bucket
         predictor = EnhancedStockPredictor(bucket_name="mlops-brza")
 
         # Initial system status
         initial_status = predictor.get_system_status()
         logger.info(f"Initial system status: {json.dumps(initial_status, indent=2)}")
 
-        # Now we can fetch data because we defined fetch_stock_data
+        # Fetch data
         data = predictor.fetch_stock_data()
         logger.info(f"Fetched {len(data)} records")
 
-        # Train initial model
-        model, metrics = predictor.train_and_evaluate(data)
-        logger.info(f"Initial model metrics: {asdict(metrics)}")
+        # Train initial models
+        models, metrics = predictor.train_and_evaluate(data)
+        logger.info("Initial model metrics:")
+        for model_name, metric in metrics.items():
+            logger.info(f"{model_name}: {asdict(metric)}")
 
         # Set up continuous monitoring
         while True:
             try:
                 new_data = predictor.fetch_stock_data()
-                predictions, drift_report = predictor.predict(new_data)
+                predictions = predictor.predict(new_data)
+                
                 current_status = predictor.get_system_status()
                 logger.info(f"Current system status: {json.dumps(current_status, indent=2)}")
+                
+                # Log predictions for each model
+                for model_name, (pred, _) in predictions.items():
+                    logger.info(f"{model_name} predictions summary: mean={np.mean(pred):.2f}, std={np.std(pred):.2f}")
+                
                 time.sleep(300)  # 5 minutes interval
 
             except Exception as e:
