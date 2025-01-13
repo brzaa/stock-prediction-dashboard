@@ -186,6 +186,13 @@ class EnhancedDataDriftManager:
         )
         blob.upload_from_string(json.dumps(metrics))
 
+    def _calculate_stats(self, series: pd.Series) -> Dict[str, float]:
+        """Helper to compute mean and std from a series"""
+        return {
+            'mean': series.mean(),
+            'std': series.std(),
+        }
+
 class EnhancedModelVersionControl:
     def __init__(self, bucket: storage.bucket.Bucket):
         self.bucket = bucket
@@ -278,7 +285,8 @@ class EnhancedModelVersionControl:
         return json.loads(blob.download_as_string())
 
 class EnhancedStockPredictor:
-    def __init__(self, bucket_name: str = "mlops-stock-predictions"):
+    # Use your known working bucket "mlops-brza" as default
+    def __init__(self, bucket_name: str = "mlops-brza"):
         self.bucket_name = bucket_name
         self.client = storage.Client()
         self.bucket = self.client.bucket(bucket_name)
@@ -297,6 +305,14 @@ class EnhancedStockPredictor:
 
     def _initialize_storage(self):
         """Initialize GCS storage structure"""
+        # You may skip creating the bucket if you already have "mlops-brza".
+        # If you want to auto-create, uncomment the lines below:
+        #
+        # if not self.bucket.exists():
+        #     logger.warning(f"Bucket {self.bucket_name} does not exist. Creating it...")
+        #     self.client.create_bucket(self.bucket_name)
+        #     logger.info(f"Bucket {self.bucket_name} created successfully.")
+
         required_folders = [
             'model_versions/',
             'drift_history/',
@@ -478,6 +494,30 @@ class EnhancedStockPredictor:
             logger.error(f"Error in model evaluation: {str(e)}")
             raise
 
+    def _prepare_training_data(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+        """Simple train/test split. You can enhance logic as needed."""
+        split_idx = int(len(data) * 0.8)
+        
+        X = data.drop('close', axis=1)
+        y = data['close']
+
+        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        return X_train, X_test, y_train, y_test
+
+    def _make_prediction(self, data: pd.DataFrame) -> np.ndarray:
+        """Basic inference method. Uses self.scaler and current model if available."""
+        if self.current_model is None:
+            # For demonstration, re-train or fetch production model if needed
+            # Or raise an error if you want to ensure a model is loaded
+            logger.warning("No current model loaded; returning zeros.")
+            return np.zeros(len(data))
+
+        # Use the same columns that the model expects
+        X = data.drop('close', axis=1, errors='ignore')
+        X_scaled = self.scaler.transform(X)
+        return self.current_model.predict(X_scaled)
+
     def get_system_status(self) -> Dict[str, Any]:
         """Get comprehensive system status"""
         return {
@@ -504,7 +544,9 @@ def main():
     """Main execution function with enhanced error handling and logging"""
     try:
         logger.info("Starting Enhanced Stock Prediction Pipeline")
-        predictor = EnhancedStockPredictor()
+        
+        # Use your known working bucket "mlops-brza"
+        predictor = EnhancedStockPredictor(bucket_name="mlops-brza")
 
         # Initial system status
         initial_status = predictor.get_system_status()
