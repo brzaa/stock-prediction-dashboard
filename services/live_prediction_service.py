@@ -48,6 +48,7 @@ class ModelMetrics:
     r2: float
     timestamp: str = datetime.now().isoformat()
 
+
 class EnhancedDataDriftManager:
     def __init__(self, bucket: storage.bucket.Bucket):
         self.thresholds = DriftThresholds()
@@ -63,9 +64,6 @@ class EnhancedDataDriftManager:
         }
 
     def check_drift(self, new_data: pd.DataFrame) -> Tuple[bool, Dict[str, Any]]:
-        """
-        Enhanced drift detection with multiple thresholds and performance tracking
-        """
         start_time = time.time()
         drift_detected = False
         drift_report = {
@@ -104,9 +102,7 @@ class EnhancedDataDriftManager:
                 memory_usage=psutil.Process().memory_info().rss / 1024 / 1024
             )
 
-            # Store drift history
             self._store_drift_history(drift_report)
-
             return drift_detected, drift_report
 
         except Exception as e:
@@ -114,7 +110,6 @@ class EnhancedDataDriftManager:
             raise
 
     def _check_price_drift(self, new_data: pd.DataFrame) -> float:
-        """Check for drift in price-related features"""
         price_cols = ['open', 'high', 'low', 'close']
         drift_magnitude = 0.0
 
@@ -122,14 +117,12 @@ class EnhancedDataDriftManager:
             if col in self.reference_data.columns and col in new_data.columns:
                 ref_stats = self._calculate_stats(self.reference_data[col])
                 new_stats = self._calculate_stats(new_data[col])
-                
                 rel_change = abs(new_stats['mean'] - ref_stats['mean']) / ref_stats['std']
                 drift_magnitude = max(drift_magnitude, rel_change)
 
         return drift_magnitude
 
     def _check_volume_drift(self, new_data: pd.DataFrame) -> float:
-        """Check for drift in trading volume"""
         if 'volume' not in new_data.columns:
             return 0.0
 
@@ -139,7 +132,6 @@ class EnhancedDataDriftManager:
         return abs(new_vol - ref_vol) / ref_vol
 
     def _check_distribution_drift(self, new_data: pd.DataFrame) -> float:
-        """Check for changes in overall distribution using KS test"""
         from scipy import stats
         max_ks_stat = 0.0
 
@@ -150,44 +142,36 @@ class EnhancedDataDriftManager:
                     new_data[col].dropna()
                 )
                 max_ks_stat = max(max_ks_stat, ks_stat)
-
         return max_ks_stat
 
     def _log_performance_metrics(self, detection_time: float, memory_usage: float):
-        """Log performance metrics of drift detection"""
         metrics = {
             'timestamp': datetime.now().isoformat(),
             'detection_time': detection_time,
             'memory_usage': memory_usage
         }
 
-        # Store locally
         for key, value in metrics.items():
             if key != 'timestamp':
                 self.performance_metrics[f'{key}'].append(value)
 
-        # Store in GCS
         self._store_performance_metrics(metrics)
 
     def _store_drift_history(self, drift_report: Dict[str, Any]):
-        """Store drift detection history in GCS"""
         self.drift_history.append(drift_report)
         
-        # Store in GCS
         blob = self.bucket.blob(
             f'drift_history/{datetime.now().strftime("%Y/%m/%d/drift_%H%M%S.json")}'
         )
         blob.upload_from_string(json.dumps(drift_report))
 
     def _store_performance_metrics(self, metrics: Dict[str, Any]):
-        """Store performance metrics in GCS"""
         blob = self.bucket.blob(
             f'performance_metrics/{datetime.now().strftime("%Y/%m/%d/perf_%H%M%S.json")}'
         )
         blob.upload_from_string(json.dumps(metrics))
 
     def _calculate_stats(self, series: pd.Series) -> Dict[str, float]:
-        """Helper to compute mean and std from a series"""
         return {
             'mean': series.mean(),
             'std': series.std(),
@@ -205,7 +189,6 @@ class EnhancedModelVersionControl:
         self.promotion_history: List[Dict] = []
 
     def create_version(self, model: Any, metrics: ModelMetrics, metadata: Dict[str, Any]) -> str:
-        """Create new model version with enhanced tracking"""
         version_id = f"v_{int(time.time())}"
         version_info = {
             'id': version_id,
@@ -215,16 +198,12 @@ class EnhancedModelVersionControl:
             'environment': 'development'
         }
 
-        # Store version info
         self._store_version_info(version_id, version_info)
-        
-        # Store model artifact
         self._store_model_artifact(version_id, model)
         
         return version_id
 
     def promote_version(self, version_id: str, target_env: str, justification: str) -> bool:
-        """Promote model version with validation and logging"""
         try:
             if target_env not in ['staging', 'production']:
                 raise ValueError(f"Invalid target environment: {target_env}")
@@ -233,7 +212,6 @@ class EnhancedModelVersionControl:
             if not version_info:
                 raise ValueError(f"Version {version_id} not found")
 
-            # Log promotion
             promotion_info = {
                 'timestamp': datetime.now().isoformat(),
                 'version_id': version_id,
@@ -242,16 +220,11 @@ class EnhancedModelVersionControl:
                 'justification': justification
             }
 
-            # Update version info
             version_info['environment'] = target_env
             self._store_version_info(version_id, version_info)
             
-            # Store promotion record
             self._store_promotion_record(promotion_info)
-            
-            # Update current version pointer
             self.current_version[target_env] = version_id
-            
             return True
 
         except Exception as e:
@@ -259,18 +232,15 @@ class EnhancedModelVersionControl:
             return False
 
     def _store_version_info(self, version_id: str, version_info: Dict[str, Any]):
-        """Store version information in GCS"""
         blob = self.bucket.blob(f'model_versions/{version_id}/info.json')
         blob.upload_from_string(json.dumps(version_info))
 
     def _store_model_artifact(self, version_id: str, model: Any):
-        """Store model artifact in GCS"""
         import pickle
         blob = self.bucket.blob(f'model_versions/{version_id}/model.pkl')
         blob.upload_from_string(pickle.dumps(model))
 
     def _store_promotion_record(self, promotion_info: Dict[str, Any]):
-        """Store promotion record in GCS"""
         self.promotion_history.append(promotion_info)
         blob = self.bucket.blob(
             f'promotions/{datetime.now().strftime("%Y/%m/%d/promotion_%H%M%S.json")}'
@@ -278,24 +248,21 @@ class EnhancedModelVersionControl:
         blob.upload_from_string(json.dumps(promotion_info))
 
     def _load_version_info(self, version_id: str) -> Optional[Dict[str, Any]]:
-        """Load version information from GCS"""
         blob = self.bucket.blob(f'model_versions/{version_id}/info.json')
         if not blob.exists():
             return None
         return json.loads(blob.download_as_string())
 
+
 class EnhancedStockPredictor:
-    # Use your known working bucket "mlops-brza" as default
     def __init__(self, bucket_name: str = "mlops-brza"):
         self.bucket_name = bucket_name
         self.client = storage.Client()
         self.bucket = self.client.bucket(bucket_name)
         
-        # Initialize enhanced components
         self.drift_manager = EnhancedDataDriftManager(self.bucket)
         self.version_control = EnhancedModelVersionControl(self.bucket)
         
-        # Initialize model-specific components
         self.scaler = StandardScaler()
         self.current_model = None
         self.model_metrics = None
@@ -304,15 +271,6 @@ class EnhancedStockPredictor:
         logger.info("Enhanced Stock Predictor initialized successfully")
 
     def _initialize_storage(self):
-        """Initialize GCS storage structure"""
-        # You may skip creating the bucket if you already have "mlops-brza".
-        # If you want to auto-create, uncomment the lines below:
-        #
-        # if not self.bucket.exists():
-        #     logger.warning(f"Bucket {self.bucket_name} does not exist. Creating it...")
-        #     self.client.create_bucket(self.bucket_name)
-        #     logger.info(f"Bucket {self.bucket_name} created successfully.")
-
         required_folders = [
             'model_versions/',
             'drift_history/',
@@ -320,25 +278,43 @@ class EnhancedStockPredictor:
             'promotions/',
             'predictions/'
         ]
-
         for folder in required_folders:
             blob = self.bucket.blob(folder)
             if not blob.exists():
                 blob.upload_from_string('')
 
-    def train_and_evaluate(self, data: pd.DataFrame) -> Tuple[Any, ModelMetrics]:
-        """Train model with enhanced monitoring and validation"""
+    # -------------------------------------------------------------------------
+    # ADD THIS METHOD:
+    # -------------------------------------------------------------------------
+    def fetch_stock_data(self) -> pd.DataFrame:
+        """
+        Example method to download stock data CSV from GCS, e.g. 'stock_data/MASB_latest.csv'.
+        Adjust path or filename as needed to match your actual data.
+        """
         try:
-            # Prepare data
+            blob = self.bucket.blob('stock_data/MASB_latest.csv')
+            if not blob.exists():
+                raise FileNotFoundError("File stock_data/MASB_latest.csv not found in the bucket.")
+
+            local_file = '/tmp/MASB_latest.csv'
+            blob.download_to_filename(local_file)
+            
+            data = pd.read_csv(local_file, parse_dates=['date'])
+            data.set_index('date', inplace=True)
+
+            logger.info(f"Fetched {len(data)} records from {blob.name}")
+            return data
+
+        except Exception as e:
+            logger.error(f"Error fetching stock data: {str(e)}")
+            raise
+
+    def train_and_evaluate(self, data: pd.DataFrame) -> Tuple[Any, ModelMetrics]:
+        try:
             X_train, X_test, y_train, y_test = self._prepare_training_data(data)
-            
-            # Train model
             model = self._train_model(X_train, y_train)
-            
-            # Evaluate model
             metrics = self._evaluate_model(model, X_test, y_test)
-            
-            # Create new version
+
             version_id = self.version_control.create_version(
                 model=model,
                 metrics=metrics,
@@ -357,21 +333,15 @@ class EnhancedStockPredictor:
             raise
 
     def predict(self, data: pd.DataFrame) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """Make predictions with enhanced monitoring"""
         try:
-            # Check for drift
             drift_detected, drift_report = self.drift_manager.check_drift(data)
             
             if drift_detected:
                 logger.warning("Drift detected during prediction")
                 if drift_report['severity'] == 'HIGH':
-                    # Trigger retraining
                     self._handle_high_severity_drift(data)
             
-            # Make prediction
             prediction = self._make_prediction(data)
-            
-            # Log prediction
             self._log_prediction(data, prediction, drift_report)
             
             return prediction, drift_report
@@ -381,21 +351,15 @@ class EnhancedStockPredictor:
             raise
 
     def _handle_high_severity_drift(self, data: pd.DataFrame):
-        """Handle high severity drift detection"""
         logger.info("Handling high severity drift")
-        
-        # Train new model
         new_model, metrics = self.train_and_evaluate(data)
-        
-        # Create new version
         version_id = self.version_control.create_version(
             model=new_model,
             metrics=metrics,
             metadata={'drift_triggered': True}
         )
-        
-        # Promote to staging if metrics are good
-        if metrics.r2 > 0.8:  # Example threshold
+
+        if metrics.r2 > 0.8:
             self.version_control.promote_version(
                 version_id=version_id,
                 target_env='staging',
@@ -403,7 +367,6 @@ class EnhancedStockPredictor:
             )
 
     def _log_prediction(self, data: pd.DataFrame, prediction: np.ndarray, drift_report: Dict[str, Any]):
-        """Log prediction details"""
         prediction_log = {
             'timestamp': datetime.now().isoformat(),
             'prediction_summary': {
@@ -422,7 +385,6 @@ class EnhancedStockPredictor:
         blob.upload_from_string(json.dumps(prediction_log))
 
     def _train_model(self, X_train: pd.DataFrame, y_train: pd.Series) -> Any:
-        """Train model with enhanced monitoring"""
         start_time = time.time()
         memory_before = psutil.Process().memory_info().rss
 
@@ -437,7 +399,6 @@ class EnhancedStockPredictor:
             )
             model.fit(X_train_scaled, y_train)
 
-            # Log training metrics
             training_metrics = {
                 'timestamp': datetime.now().isoformat(),
                 'duration': time.time() - start_time,
@@ -458,7 +419,6 @@ class EnhancedStockPredictor:
             raise
 
     def _evaluate_model(self, model: Any, X_test: pd.DataFrame, y_test: pd.Series) -> ModelMetrics:
-        """Evaluate model with enhanced metrics"""
         try:
             X_test_scaled = self.scaler.transform(X_test)
             predictions = model.predict(X_test_scaled)
@@ -470,7 +430,6 @@ class EnhancedStockPredictor:
                 r2=r2_score(y_test, predictions)
             )
 
-            # Log evaluation metrics
             eval_log = {
                 'timestamp': datetime.now().isoformat(),
                 'metrics': asdict(metrics),
@@ -495,9 +454,8 @@ class EnhancedStockPredictor:
             raise
 
     def _prepare_training_data(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-        """Simple train/test split. You can enhance logic as needed."""
+        """Simple 80/20 split; adjust or enhance as needed."""
         split_idx = int(len(data) * 0.8)
-        
         X = data.drop('close', axis=1)
         y = data['close']
 
@@ -506,20 +464,15 @@ class EnhancedStockPredictor:
         return X_train, X_test, y_train, y_test
 
     def _make_prediction(self, data: pd.DataFrame) -> np.ndarray:
-        """Basic inference method. Uses self.scaler and current model if available."""
         if self.current_model is None:
-            # For demonstration, re-train or fetch production model if needed
-            # Or raise an error if you want to ensure a model is loaded
             logger.warning("No current model loaded; returning zeros.")
             return np.zeros(len(data))
 
-        # Use the same columns that the model expects
         X = data.drop('close', axis=1, errors='ignore')
         X_scaled = self.scaler.transform(X)
         return self.current_model.predict(X_scaled)
 
     def get_system_status(self) -> Dict[str, Any]:
-        """Get comprehensive system status"""
         return {
             'timestamp': datetime.now().isoformat(),
             'current_model': {
@@ -540,19 +493,19 @@ class EnhancedStockPredictor:
             }
         }
 
+
 def main():
-    """Main execution function with enhanced error handling and logging"""
     try:
         logger.info("Starting Enhanced Stock Prediction Pipeline")
         
-        # Use your known working bucket "mlops-brza"
+        # Create an instance with the known existing bucket
         predictor = EnhancedStockPredictor(bucket_name="mlops-brza")
 
         # Initial system status
         initial_status = predictor.get_system_status()
         logger.info(f"Initial system status: {json.dumps(initial_status, indent=2)}")
 
-        # Fetch and process data
+        # Now we can fetch data because we defined fetch_stock_data
         data = predictor.fetch_stock_data()
         logger.info(f"Fetched {len(data)} records")
 
@@ -563,27 +516,21 @@ def main():
         # Set up continuous monitoring
         while True:
             try:
-                # Fetch new data
                 new_data = predictor.fetch_stock_data()
-                
-                # Make predictions
                 predictions, drift_report = predictor.predict(new_data)
-                
-                # Get updated system status
                 current_status = predictor.get_system_status()
                 logger.info(f"Current system status: {json.dumps(current_status, indent=2)}")
-                
-                # Wait for next iteration
                 time.sleep(300)  # 5 minutes interval
 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {str(e)}")
-                time.sleep(60)  # Wait 1 minute before retrying
+                time.sleep(60)  # wait 1 minute before retrying
                 continue
 
     except Exception as e:
         logger.error(f"Fatal error in pipeline: {str(e)}")
         raise
+
 
 if __name__ == "__main__":
     main()
