@@ -4,6 +4,7 @@ import numpy as np
 from google.cloud import storage
 import logging
 import time
+import psutil
 from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
@@ -11,612 +12,536 @@ import xgboost as xgb
 from sklearn.tree import DecisionTreeRegressor
 from lightgbm import LGBMRegressor
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from scipy import stats
 import json
 import warnings
-from google.colab import auth
+from typing import Dict, Any, Tuple, Optional, List
+from dataclasses import dataclass, asdict
 
-warnings.filterwarnings('ignore')
-
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('mlops_pipeline.log')
+    ]
 )
 logger = logging.getLogger(__name__)
 
+@dataclass
+class DriftThresholds:
+    alpha: float = 0.15
+    beta: float = 0.10
+    volume: float = 0.20
+    price: float = 0.25
+    window_size: int = 30
+    min_data_points: int = 100
 
-class DataDriftManager:
-    def __init__(self):
-        self.untrained_data = pd.DataFrame()
-        self.alpha_drift_threshold = 0.15
+@dataclass
+class ModelMetrics:
+    mse: float
+    rmse: float
+    mae: float
+    r2: float
+    timestamp: str = datetime.now().isoformat()
+
+class EnhancedDataDriftManager:
+    def __init__(self, bucket: storage.bucket.Bucket):
+        self.thresholds = DriftThresholds()
+        self.bucket = bucket
         self.reference_data = None
+        self.untrained_data = pd.DataFrame()
         self.new_data_buffer = pd.DataFrame()
-        
-    def store_untrained_data(self, data):
-        self.untrained_data = pd.concat([self.untrained_data, data])
-        logger.info(f"Stored {len(data)} new records. Total untrained: {len(self.untrained_data)}")
-    
-    def set_reference_data(self, data):
-        self.reference_data = data.copy()
-        logger.info("Reference data updated")
-    
-    def add_new_data(self, data):
-        self.new_data_buffer = pd.concat([self.new_data_buffer, data])
-        logger.info(f"Added {len(data)} records to buffer. Total: {len(self.new_data_buffer)}")
-    
-    def check_alpha_drift(self, new_data):
-        if self.reference_data is None:
-            return False, {}
-            
-        drift_metrics = {}
-        significant_drift = False
-        
-        for column in self.reference_data.columns:
-            if column in new_data.columns:
-                ref_stats = self._calculate_stats(self.reference_data[column])
-                new_stats = self._calculate_stats(new_data[column])
-                
-                drift_val = abs(new_stats['mean'] - ref_stats['mean']) / ref_stats['std']
-                drift_magnitude = float(drift_val) if not pd.isna(drift_val) else 0.0
-                is_significant = bool(drift_magnitude > self.alpha_drift_threshold)
-                
-                drift_metrics[column] = {
-                    'drift_magnitude': drift_magnitude,
-                    'is_significant': is_significant,
-                    'ref_stats': {
-                        'mean': float(ref_stats['mean']) if ref_stats['mean'] is not None else 0.0,
-                        'std': float(ref_stats['std']) if ref_stats['std'] is not None else 0.0,
-                        'median': float(ref_stats['median']) if ref_stats['median'] is not None else 0.0,
-                        'q1': float(ref_stats['q1']) if ref_stats['q1'] is not None else 0.0,
-                        'q3': float(ref_stats['q3']) if ref_stats['q3'] is not None else 0.0,
-                    },
-                    'new_stats': {
-                        'mean': float(new_stats['mean']) if new_stats['mean'] is not None else 0.0,
-                        'std': float(new_stats['std']) if new_stats['std'] is not None else 0.0,
-                        'median': float(new_stats['median']) if new_stats['median'] is not None else 0.0,
-                        'q1': float(new_stats['q1']) if new_stats['q1'] is not None else 0.0,
-                        'q3': float(new_stats['q3']) if new_stats['q3'] is not None else 0.0,
-                    }
-                }
-                
-                if is_significant:
-                    significant_drift = True
-        
-        return significant_drift, drift_metrics
-    
-    def _calculate_stats(self, series):
-        return {
-            'mean': series.mean(),
-            'std': series.std(),
-            'median': series.median(),
-            'q1': series.quantile(0.25),
-            'q3': series.quantile(0.75)
+        self.drift_history: List[Dict] = []
+        self.performance_metrics = {
+            'detection_time': [],
+            'processing_time': [],
+            'memory_usage': []
         }
 
-
-class ModelVersionControl:
-    def __init__(self):
-        self.current_version = {
-            'beta': None,
-            'alpha': None,
-            'production': None
-        }
-        self.version_history = []
-        
-    def promote_model(self, model_artifact, drift_analysis):
-        if drift_analysis['severity'] == 'HIGH':
-            new_version = self._create_beta_version(model_artifact)
-            self.current_version['beta'] = new_version
-            self.version_history.append(new_version)
-            return 'BETA', new_version
-            
-        elif drift_analysis['severity'] == 'MODERATE':
-            if self._is_beta_stable():
-                new_version = self._promote_to_alpha()
-                self.current_version['alpha'] = new_version
-                self.version_history.append(new_version)
-                return 'ALPHA', new_version
-                
-        return None, None
-        
-    def _create_beta_version(self, model_artifact):
-        return {
-            'id': f"beta_{int(time.time())}",
+    def check_drift(self, new_data: pd.DataFrame) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Enhanced drift detection with multiple thresholds and performance tracking
+        """
+        start_time = time.time()
+        drift_detected = False
+        drift_report = {
             'timestamp': datetime.now().isoformat(),
-            'artifact': model_artifact,
-            'status': 'beta',
             'metrics': {},
-            'training_data_snapshot': None
+            'thresholds': asdict(self.thresholds),
+            'severity': 'NONE'
         }
-        
-    def _promote_to_alpha(self):
-        if self.current_version['beta'] is None:
-            raise ValueError("No beta version available")
-            
-        alpha_version = self.current_version['beta'].copy()
-        alpha_version['id'] = f"alpha_{int(time.time())}"
-        alpha_version['status'] = 'alpha'
-        return alpha_version
-        
-    def _is_beta_stable(self):
-        return self.current_version['beta'] is not None
 
-
-class StockPredictor:
-    def __init__(self, bucket_name="mlops-brza"):
-        logger.info("Initializing StockPredictor...")
-        self.bucket_name = bucket_name
-        
         try:
-            auth.authenticate_user()
-            self.client = storage.Client()
-            self.bucket = self.client.bucket(bucket_name)
-            logger.info("GCloud authentication successful")
-        except Exception as e:
-            logger.error(f"Authentication failed: {str(e)}")
-            raise
-        
-        self.scaler = StandardScaler()
-        self.drift_manager = DataDriftManager()
-        self.version_control = ModelVersionControl()
-        self._verify_gcs_connection()
+            if self.reference_data is None or len(new_data) < self.thresholds.min_data_points:
+                return False, drift_report
 
-    def _verify_gcs_connection(self):
-        try:
-            if not self.bucket.exists():
-                raise Exception(f"Bucket {self.bucket_name} not found")
-            
-            required_folders = [
-                'stock_data/', 'live_predictions/', 
-                'drift_analysis/', 'model_events/', 'version_control/'
-            ]
-            
-            for folder in required_folders:
-                blob = self.bucket.blob(folder)
-                if not blob.exists():
-                    blob.upload_from_string('')
-            
-            logger.info("GCS structure verified")
+            # Check different types of drift
+            price_drift = self._check_price_drift(new_data)
+            volume_drift = self._check_volume_drift(new_data)
+            distribution_drift = self._check_distribution_drift(new_data)
+
+            drift_report['metrics'] = {
+                'price_drift': price_drift,
+                'volume_drift': volume_drift,
+                'distribution_drift': distribution_drift
+            }
+
+            # Determine severity
+            if any(d > self.thresholds.alpha for d in [price_drift, volume_drift, distribution_drift]):
+                drift_report['severity'] = 'HIGH'
+                drift_detected = True
+            elif any(d > self.thresholds.beta for d in [price_drift, volume_drift, distribution_drift]):
+                drift_report['severity'] = 'MEDIUM'
+                drift_detected = True
+
+            # Log performance metrics
+            self._log_performance_metrics(
+                detection_time=time.time() - start_time,
+                memory_usage=psutil.Process().memory_info().rss / 1024 / 1024
+            )
+
+            # Store drift history
+            self._store_drift_history(drift_report)
+
+            return drift_detected, drift_report
+
         except Exception as e:
-            logger.error(f"GCS verification failed: {str(e)}")
+            logger.error(f"Error in drift detection: {str(e)}")
             raise
 
-    def fetch_stock_data(self):
-        """
-        Fetch stock data from GCS and set reference data if not set.
-        Also detect drift if reference_data is set.
-        """
-        try:
-            logger.info("Fetching stock data from GCS")
-            blob = self.bucket.blob('stock_data/MASB_latest.csv')
-            
-            if not blob.exists():
-                raise FileNotFoundError("Stock data file not found in GCS")
-            
-            logger.info("Downloading stock data file...")
-            local_file = '/tmp/MASB_latest.csv'
-            blob.download_to_filename(local_file)
-            
-            logger.info("Reading stock data into DataFrame...")
-            data = pd.read_csv(local_file, parse_dates=['date'])
-            data.set_index('date', inplace=True)
-            
-            # Check for drift if reference exists
-            if self.drift_manager.reference_data is not None:
-                drift_detected, drift_report = self.drift_manager.check_alpha_drift(data)
-                if drift_detected:
-                    logger.warning("Data drift detected")
-                    drift_analysis, action_taken = self.handle_data_drift(data, drift_report)
-                    logger.info(f"Drift handling completed. Action: {action_taken['type']}")
-            else:
-                self.drift_manager.set_reference_data(data)
-            
-            return data
-        except Exception as e:
-            logger.error(f"Error fetching stock data: {str(e)}")
-            raise
+    def _check_price_drift(self, new_data: pd.DataFrame) -> float:
+        """Check for drift in price-related features"""
+        price_cols = ['open', 'high', 'low', 'close']
+        drift_magnitude = 0.0
 
-    ############################################################################
-    # MODIFIED prepare_training_data() to ensure a non-empty test set even if
-    # drift is detected. If drift => train on old_data, test on new_data.
-    ############################################################################
-    def prepare_training_data(self, data, train_size=0.8):
-        """
-        1) If drift is detected:
-             train_data = old_data
-             test_data  = new_data (last 30 days)
-           => ensures we have a non-empty test set (assuming new_data has some rows 
-              after rolling features).
-           
-        2) If no drift:
-             do normal 80/20 split on the entire dataset.
-             
-        Returns X_train, X_test, y_train, y_test (2D) for tree-based models.
-        If insufficient data after rolling-window, returns (None, None, None, None).
-        """
-        cutoff_date = data.index.max() - pd.Timedelta(days=30)
-        old_data = data[data.index <= cutoff_date]
-        new_data = data[data.index > cutoff_date]
-        
-        # Add new data to drift manager
-        self.drift_manager.add_new_data(new_data)
-        has_drift, drift_metrics = self.drift_manager.check_alpha_drift(new_data)
-        
-        if has_drift:
-            logger.warning("Alpha drift detected")
-            self._handle_alpha_drift(drift_metrics)
-            self.drift_manager.store_untrained_data(new_data)
+        for col in price_cols:
+            if col in self.reference_data.columns and col in new_data.columns:
+                ref_stats = self._calculate_stats(self.reference_data[col])
+                new_stats = self._calculate_stats(new_data[col])
+                
+                rel_change = abs(new_stats['mean'] - ref_stats['mean']) / ref_stats['std']
+                drift_magnitude = max(drift_magnitude, rel_change)
 
-            # Train on old_data
-            train_data = old_data
-            # Test on new_data
-            test_data = new_data
-        else:
-            # No drift => entire data is for train/test
-            train_data = data
-            test_data  = pd.DataFrame()  # We'll do an 80/20 split below
+        return drift_magnitude
 
-        # Prepare train_data features
-        X_train_feats = self._prepare_features(train_data)
-        y_train_vals  = train_data['close'].reindex(X_train_feats.index)
+    def _check_volume_drift(self, new_data: pd.DataFrame) -> float:
+        """Check for drift in trading volume"""
+        if 'volume' not in new_data.columns:
+            return 0.0
 
-        # If drift => test_data is last 30 days
-        if has_drift:
-            X_test_feats = self._prepare_features(test_data)
-            y_test_vals  = test_data['close'].reindex(X_test_feats.index)
-        else:
-            # If no drift => do normal 80/20 split within train_data
-            if len(X_train_feats) == 0:
-                logger.error("No valid training rows after feature engineering.")
-                return None, None, None, None
-            split_idx = int(len(X_train_feats) * train_size)
-            X_test_feats = X_train_feats[split_idx:]
-            y_test_vals  = y_train_vals[split_idx:]
-            X_train_feats = X_train_feats[:split_idx]
-            y_train_vals  = y_train_vals[:split_idx]
+        ref_vol = self.reference_data['volume'].mean()
+        new_vol = new_data['volume'].mean()
+        
+        return abs(new_vol - ref_vol) / ref_vol
 
-        # Check if we ended up with zero rows
-        if len(X_train_feats) == 0 or len(y_train_vals) == 0:
-            logger.error("X_train or y_train is empty. Skipping training.")
-            return None, None, None, None
-        if len(X_test_feats) == 0 or len(y_test_vals) == 0:
-            logger.warning("X_test or y_test is empty => skipping test set.")
-            # We'll return (X_train, None, y_train, None) so we can train 
-            # but have no test eval
-            return X_train_feats, None, y_train_vals, None
+    def _check_distribution_drift(self, new_data: pd.DataFrame) -> float:
+        """Check for changes in overall distribution using KS test"""
+        from scipy import stats
+        max_ks_stat = 0.0
 
-        return X_train_feats, X_test_feats, y_train_vals, y_test_vals
+        for col in self.reference_data.columns:
+            if col in new_data.columns:
+                ks_stat, _ = stats.ks_2samp(
+                    self.reference_data[col].dropna(),
+                    new_data[col].dropna()
+                )
+                max_ks_stat = max(max_ks_stat, ks_stat)
 
-    ##########################################################################
-    # Smaller rolling windows so we lose fewer rows
-    ##########################################################################
-    def _prepare_features(self, data):
-        """
-        Example with smaller rolling windows to drop fewer rows from NaNs.
-        """
-        features = pd.DataFrame(index=data.index)
-        
-        # Shorter windows
-        features['SMA_3'] = data['close'].rolling(window=3).mean()
-        features['SMA_10'] = data['close'].rolling(window=10).mean()
-        
-        features['RSI'] = self._calculate_rsi(data['close'], period=7)  # shorter RSI period
-        features['MACD'] = self._calculate_macd(data['close'], fast=6, slow=12, signal=3)
-        features['BB_upper'], features['BB_lower'] = self._calculate_bollinger_bands(
-            data['close'], period=10, std_dev=1
-        )
-        features['Volume_SMA'] = data['volume'].rolling(window=10).mean()
-        features['Price_Range'] = data['high'] - data['low']
-        
-        features.dropna(inplace=True)
-        return features
+        return max_ks_stat
 
-    def _calculate_rsi(self, prices, period=14):
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
-
-    def _calculate_macd(self, prices, fast=12, slow=26, signal=9):
-        exp1 = prices.ewm(span=fast).mean()
-        exp2 = prices.ewm(span=slow).mean()
-        macd = exp1 - exp2
-        signal_line = macd.ewm(span=signal).mean()
-        return macd - signal_line
-
-    def _calculate_bollinger_bands(self, prices, period=20, std_dev=2):
-        sma = prices.rolling(window=period).mean()
-        std = prices.rolling(window=period).std()
-        return sma + (std_dev * std), sma - (std_dev * std)
-
-    def _prepare_lstm_data(self, data, train_size=0.8, sequence_length=60):
-        """
-        Prepare 3D sequences for LSTM using the same smaller rolling windows.
-        """
-        features = self._prepare_features(data)  # 2D
-        y = data['close'].reindex(features.index)
-        
-        if len(features) == 0 or len(y) == 0:
-            logger.error("No valid rows for LSTM after feature engineering.")
-            return None, None, None, None, None
-        
-        split_idx = int(len(features) * train_size)
-        X_train_df, X_test_df = features[:split_idx], features[split_idx:]
-        y_train_series, y_test_series = y[:split_idx], y[split_idx:]
-        
-        X_train_scaled = self.scaler.fit_transform(X_train_df)
-        X_test_scaled = self.scaler.transform(X_test_df)
-        
-        def create_sequences(X_arr, y_arr, seq_len):
-            X_seq, y_seq = [], []
-            for i in range(len(X_arr) - seq_len):
-                X_seq.append(X_arr[i : i + seq_len])
-                y_seq.append(y_arr[i + seq_len])
-            return np.array(X_seq), np.array(y_seq)
-        
-        X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train_series.values, sequence_length)
-        X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test_series.values, sequence_length)
-        
-        if len(X_train_seq) == 0 or len(y_train_seq) == 0:
-            logger.warning("LSTM training sequence is empty. Returning None.")
-            return None, None, None, None, None
-        
-        return X_train_seq, X_test_seq, y_train_seq, y_test_seq, X_test_df.index[sequence_length:]
-
-    def _handle_alpha_drift(self, drift_metrics):
-        drift_log = {
+    def _log_performance_metrics(self, detection_time: float, memory_usage: float):
+        """Log performance metrics of drift detection"""
+        metrics = {
             'timestamp': datetime.now().isoformat(),
-            'drift_metrics': drift_metrics,
-            'action_taken': 'separate_training'
+            'detection_time': detection_time,
+            'memory_usage': memory_usage
         }
-        
-        drift_log_blob = self.bucket.blob('drift_analysis/alpha_drift_log.json')
-        existing_logs = []
-        
-        if drift_log_blob.exists():
-            existing_logs = json.loads(drift_log_blob.download_as_string())
-        
-        existing_logs.append(drift_log)
-        drift_log_blob.upload_from_string(json.dumps(existing_logs))
-        
-        if len(self.drift_manager.untrained_data) >= 1000:
-            logger.info("Sufficient untrained data. Starting retraining...")
-            self._trigger_retraining()
-    
-    def _trigger_retraining(self):
-        try:
-            all_data = pd.concat([
-                self.drift_manager.reference_data,
-                self.drift_manager.untrained_data
-            ]).sort_index()
-            
-            X_train, X_test, y_train, y_test = self.prepare_training_data(all_data)
-            if X_train is None or len(X_train) == 0:
-                logger.warning("No data to retrain after drift. Skipping.")
-                return None
 
-            new_model = self.train_model(X_train, y_train, 'xgboost')
-            self.drift_manager.set_reference_data(all_data)
-            self.drift_manager.untrained_data = pd.DataFrame()
+        # Store locally
+        for key, value in metrics.items():
+            if key != 'timestamp':
+                self.performance_metrics[f'{key}'].append(value)
+
+        # Store in GCS
+        self._store_performance_metrics(metrics)
+
+    def _store_drift_history(self, drift_report: Dict[str, Any]):
+        """Store drift detection history in GCS"""
+        self.drift_history.append(drift_report)
+        
+        # Store in GCS
+        blob = self.bucket.blob(
+            f'drift_history/{datetime.now().strftime("%Y/%m/%d/drift_%H%M%S.json")}'
+        )
+        blob.upload_from_string(json.dumps(drift_report))
+
+    def _store_performance_metrics(self, metrics: Dict[str, Any]):
+        """Store performance metrics in GCS"""
+        blob = self.bucket.blob(
+            f'performance_metrics/{datetime.now().strftime("%Y/%m/%d/perf_%H%M%S.json")}'
+        )
+        blob.upload_from_string(json.dumps(metrics))
+
+class EnhancedModelVersionControl:
+    def __init__(self, bucket: storage.bucket.Bucket):
+        self.bucket = bucket
+        self.current_version = {
+            'production': None,
+            'staging': None,
+            'development': None
+        }
+        self.version_history: List[Dict] = []
+        self.promotion_history: List[Dict] = []
+
+    def create_version(self, model: Any, metrics: ModelMetrics, metadata: Dict[str, Any]) -> str:
+        """Create new model version with enhanced tracking"""
+        version_id = f"v_{int(time.time())}"
+        version_info = {
+            'id': version_id,
+            'timestamp': datetime.now().isoformat(),
+            'metrics': asdict(metrics),
+            'metadata': metadata,
+            'environment': 'development'
+        }
+
+        # Store version info
+        self._store_version_info(version_id, version_info)
+        
+        # Store model artifact
+        self._store_model_artifact(version_id, model)
+        
+        return version_id
+
+    def promote_version(self, version_id: str, target_env: str, justification: str) -> bool:
+        """Promote model version with validation and logging"""
+        try:
+            if target_env not in ['staging', 'production']:
+                raise ValueError(f"Invalid target environment: {target_env}")
+
+            version_info = self._load_version_info(version_id)
+            if not version_info:
+                raise ValueError(f"Version {version_id} not found")
+
+            # Log promotion
+            promotion_info = {
+                'timestamp': datetime.now().isoformat(),
+                'version_id': version_id,
+                'from_env': version_info['environment'],
+                'to_env': target_env,
+                'justification': justification
+            }
+
+            # Update version info
+            version_info['environment'] = target_env
+            self._store_version_info(version_id, version_info)
             
-            logger.info("Retraining completed.")
-            return new_model
+            # Store promotion record
+            self._store_promotion_record(promotion_info)
+            
+            # Update current version pointer
+            self.current_version[target_env] = version_id
+            
+            return True
+
         except Exception as e:
-            logger.error(f"Retraining error: {str(e)}")
+            logger.error(f"Error promoting version {version_id}: {str(e)}")
+            return False
+
+    def _store_version_info(self, version_id: str, version_info: Dict[str, Any]):
+        """Store version information in GCS"""
+        blob = self.bucket.blob(f'model_versions/{version_id}/info.json')
+        blob.upload_from_string(json.dumps(version_info))
+
+    def _store_model_artifact(self, version_id: str, model: Any):
+        """Store model artifact in GCS"""
+        import pickle
+        blob = self.bucket.blob(f'model_versions/{version_id}/model.pkl')
+        blob.upload_from_string(pickle.dumps(model))
+
+    def _store_promotion_record(self, promotion_info: Dict[str, Any]):
+        """Store promotion record in GCS"""
+        self.promotion_history.append(promotion_info)
+        blob = self.bucket.blob(
+            f'promotions/{datetime.now().strftime("%Y/%m/%d/promotion_%H%M%S.json")}'
+        )
+        blob.upload_from_string(json.dumps(promotion_info))
+
+    def _load_version_info(self, version_id: str) -> Optional[Dict[str, Any]]:
+        """Load version information from GCS"""
+        blob = self.bucket.blob(f'model_versions/{version_id}/info.json')
+        if not blob.exists():
+            return None
+        return json.loads(blob.download_as_string())
+
+class EnhancedStockPredictor:
+    def __init__(self, bucket_name: str = "mlops-stock-predictions"):
+        self.bucket_name = bucket_name
+        self.client = storage.Client()
+        self.bucket = self.client.bucket(bucket_name)
+        
+        # Initialize enhanced components
+        self.drift_manager = EnhancedDataDriftManager(self.bucket)
+        self.version_control = EnhancedModelVersionControl(self.bucket)
+        
+        # Initialize model-specific components
+        self.scaler = StandardScaler()
+        self.current_model = None
+        self.model_metrics = None
+
+        self._initialize_storage()
+        logger.info("Enhanced Stock Predictor initialized successfully")
+
+    def _initialize_storage(self):
+        """Initialize GCS storage structure"""
+        required_folders = [
+            'model_versions/',
+            'drift_history/',
+            'performance_metrics/',
+            'promotions/',
+            'predictions/'
+        ]
+
+        for folder in required_folders:
+            blob = self.bucket.blob(folder)
+            if not blob.exists():
+                blob.upload_from_string('')
+
+    def train_and_evaluate(self, data: pd.DataFrame) -> Tuple[Any, ModelMetrics]:
+        """Train model with enhanced monitoring and validation"""
+        try:
+            # Prepare data
+            X_train, X_test, y_train, y_test = self._prepare_training_data(data)
+            
+            # Train model
+            model = self._train_model(X_train, y_train)
+            
+            # Evaluate model
+            metrics = self._evaluate_model(model, X_test, y_test)
+            
+            # Create new version
+            version_id = self.version_control.create_version(
+                model=model,
+                metrics=metrics,
+                metadata={
+                    'data_points': len(data),
+                    'training_date': datetime.now().isoformat(),
+                    'feature_columns': list(X_train.columns)
+                }
+            )
+
+            logger.info(f"Successfully trained and versioned model: {version_id}")
+            return model, metrics
+
+        except Exception as e:
+            logger.error(f"Error in train_and_evaluate: {str(e)}")
             raise
 
-    def handle_data_drift(self, data, drift_report):
-        drift_analysis = {'severity': 'HIGH'}
-        action_taken = {'type': 'PROMOTE_BETA'}
-        return drift_analysis, action_taken
+    def predict(self, data: pd.DataFrame) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Make predictions with enhanced monitoring"""
+        try:
+            # Check for drift
+            drift_detected, drift_report = self.drift_manager.check_drift(data)
+            
+            if drift_detected:
+                logger.warning("Drift detected during prediction")
+                if drift_report['severity'] == 'HIGH':
+                    # Trigger retraining
+                    self._handle_high_severity_drift(data)
+            
+            # Make prediction
+            prediction = self._make_prediction(data)
+            
+            # Log prediction
+            self._log_prediction(data, prediction, drift_report)
+            
+            return prediction, drift_report
 
-    def train_model(self, X_train, y_train, model_type='xgboost'):
-        """
-        For tree-based models, X_train is 2D.
-        For LSTM, you must call train_lstm(...) separately (it needs 3D).
-        """
-        if model_type == 'xgboost':
-            return self.train_xgboost(X_train, y_train)
-        elif model_type == 'decision_tree':
-            return self.train_decision_tree(X_train, y_train)
-        elif model_type == 'lightgbm':
-            return self.train_lightgbm(X_train, y_train)
-        else:
-            raise ValueError(f"Unknown model type: {model_type}")
+        except Exception as e:
+            logger.error(f"Error in predict: {str(e)}")
+            raise
 
-    def train_xgboost(self, X_train, y_train):
-        if len(X_train) == 0:
-            logger.error("X_train is empty in train_xgboost. Skipping.")
-            return None, {}
+    def _handle_high_severity_drift(self, data: pd.DataFrame):
+        """Handle high severity drift detection"""
+        logger.info("Handling high severity drift")
         
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        params = {
-            "objective": "reg:squarederror",
-            "max_depth": 5,
-            "learning_rate": 0.01,
-            "n_estimators": 100
-        }
-        model = xgb.XGBRegressor(**params)
-        model.fit(X_train_scaled, y_train)
-        return model, params
-
-    def train_decision_tree(self, X_train, y_train):
-        if len(X_train) == 0:
-            logger.error("X_train is empty in train_decision_tree. Skipping.")
-            return None, {}
+        # Train new model
+        new_model, metrics = self.train_and_evaluate(data)
         
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        params = {
-            "max_depth": 10,
-            "min_samples_split": 20,
-            "min_samples_leaf": 10,
-            "random_state": 42
-        }
-        model = DecisionTreeRegressor(**params)
-        model.fit(X_train_scaled, y_train)
-        return model, params
-
-    def train_lightgbm(self, X_train, y_train):
-        if len(X_train) == 0:
-            logger.error("X_train is empty in train_lightgbm. Skipping.")
-            return None, {}
-        
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        params = {
-            "objective": "regression",
-            "max_depth": 7,
-            "learning_rate": 0.05,
-            "n_estimators": 100,
-            "num_leaves": 31
-        }
-        model = LGBMRegressor(**params)
-        model.fit(X_train_scaled, y_train)
-        return model, params
-
-    def train_lstm(self, X_train_seq, y_train_seq):
-        if X_train_seq is None or len(X_train_seq) == 0:
-            logger.error("X_train_seq is empty in train_lstm. Skipping.")
-            return None, {}
-        
-        params = {
-            "lstm_units": 128,
-            "dropout_rate": 0.3,
-            "learning_rate": 0.0005,
-            "epochs": 50,
-            "batch_size": 32
-        }
-        
-        model = Sequential([
-            LSTM(params["lstm_units"], return_sequences=True, 
-                 input_shape=(X_train_seq.shape[1], X_train_seq.shape[2])),
-            Dropout(params["dropout_rate"]),
-            LSTM(params["lstm_units"]//2),
-            Dropout(params["dropout_rate"]),
-            Dense(32, activation='relu'),
-            Dense(1)
-        ])
-        
-        model.compile(optimizer=Adam(learning_rate=params["learning_rate"]), loss='huber')
-        
-        callbacks = [
-            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
-        ]
-        
-        model.fit(
-            X_train_seq, y_train_seq,
-            epochs=params["epochs"],
-            batch_size=params["batch_size"],
-            validation_split=0.1,
-            callbacks=callbacks,
-            verbose=1
+        # Create new version
+        version_id = self.version_control.create_version(
+            model=new_model,
+            metrics=metrics,
+            metadata={'drift_triggered': True}
         )
         
-        return model, params
+        # Promote to staging if metrics are good
+        if metrics.r2 > 0.8:  # Example threshold
+            self.version_control.promote_version(
+                version_id=version_id,
+                target_env='staging',
+                justification='Drift-triggered retraining with good metrics'
+            )
 
-    def evaluate_tree_based(self, model, X_test, y_test):
-        if model is None:
-            logger.warning("No model provided for tree-based evaluation.")
-            return {}
-        
-        # If we have no test set, skip evaluation
-        if X_test is None or y_test is None or len(X_test) == 0:
-            logger.warning("Skipping evaluation because X_test is empty or None.")
-            return {}
-        
-        X_test_scaled = self.scaler.transform(X_test)
-        preds = model.predict(X_test_scaled)
-        return {
-            'mse': mean_squared_error(y_test, preds),
-            'rmse': np.sqrt(mean_squared_error(y_test, preds)),
-            'mae': mean_absolute_error(y_test, preds),
-            'r2': r2_score(y_test, preds)
+    def _log_prediction(self, data: pd.DataFrame, prediction: np.ndarray, drift_report: Dict[str, Any]):
+        """Log prediction details"""
+        prediction_log = {
+            'timestamp': datetime.now().isoformat(),
+            'prediction_summary': {
+                'mean': float(np.mean(prediction)),
+                'std': float(np.std(prediction)),
+                'min': float(np.min(prediction)),
+                'max': float(np.max(prediction))
+            },
+            'drift_detected': drift_report['severity'] != 'NONE',
+            'model_version': self.version_control.current_version['production']
         }
 
-    def evaluate_lstm(self, model, X_test_seq, y_test_seq):
-        if model is None:
-            logger.warning("No model provided for LSTM evaluation.")
-            return {}
-        
-        if X_test_seq is None or y_test_seq is None or len(X_test_seq) == 0:
-            logger.warning("Skipping LSTM evaluation because X_test_seq is empty or None.")
-            return {}
-        
-        preds = model.predict(X_test_seq).flatten()
+        blob = self.bucket.blob(
+            f'predictions/{datetime.now().strftime("%Y/%m/%d/pred_%H%M%S.json")}'
+        )
+        blob.upload_from_string(json.dumps(prediction_log))
+
+    def _train_model(self, X_train: pd.DataFrame, y_train: pd.Series) -> Any:
+        """Train model with enhanced monitoring"""
+        start_time = time.time()
+        memory_before = psutil.Process().memory_info().rss
+
+        try:
+            X_train_scaled = self.scaler.fit_transform(X_train)
+            model = LGBMRegressor(
+                objective='regression',
+                max_depth=7,
+                learning_rate=0.05,
+                n_estimators=100,
+                num_leaves=31
+            )
+            model.fit(X_train_scaled, y_train)
+
+            # Log training metrics
+            training_metrics = {
+                'timestamp': datetime.now().isoformat(),
+                'duration': time.time() - start_time,
+                'memory_used': (psutil.Process().memory_info().rss - memory_before) / 1024 / 1024,
+                'data_points': len(X_train),
+                'feature_count': X_train.shape[1]
+            }
+
+            blob = self.bucket.blob(
+                f'training_metrics/{datetime.now().strftime("%Y/%m/%d/training_%H%M%S.json")}'
+            )
+            blob.upload_from_string(json.dumps(training_metrics))
+
+            return model
+
+        except Exception as e:
+            logger.error(f"Error in model training: {str(e)}")
+            raise
+
+    def _evaluate_model(self, model: Any, X_test: pd.DataFrame, y_test: pd.Series) -> ModelMetrics:
+        """Evaluate model with enhanced metrics"""
+        try:
+            X_test_scaled = self.scaler.transform(X_test)
+            predictions = model.predict(X_test_scaled)
+
+            metrics = ModelMetrics(
+                mse=mean_squared_error(y_test, predictions),
+                rmse=np.sqrt(mean_squared_error(y_test, predictions)),
+                mae=mean_absolute_error(y_test, predictions),
+                r2=r2_score(y_test, predictions)
+            )
+
+            # Log evaluation metrics
+            eval_log = {
+                'timestamp': datetime.now().isoformat(),
+                'metrics': asdict(metrics),
+                'test_size': len(X_test),
+                'prediction_stats': {
+                    'mean': float(np.mean(predictions)),
+                    'std': float(np.std(predictions)),
+                    'min': float(np.min(predictions)),
+                    'max': float(np.max(predictions))
+                }
+            }
+
+            blob = self.bucket.blob(
+                f'evaluation_metrics/{datetime.now().strftime("%Y/%m/%d/eval_%H%M%S.json")}'
+            )
+            blob.upload_from_string(json.dumps(eval_log))
+
+            return metrics
+
+        except Exception as e:
+            logger.error(f"Error in model evaluation: {str(e)}")
+            raise
+
+    def get_system_status(self) -> Dict[str, Any]:
+        """Get comprehensive system status"""
         return {
-            'mse': mean_squared_error(y_test_seq, preds),
-            'rmse': np.sqrt(mean_squared_error(y_test_seq, preds)),
-            'mae': mean_absolute_error(y_test_seq, preds),
-            'r2': r2_score(y_test_seq, preds)
+            'timestamp': datetime.now().isoformat(),
+            'current_model': {
+                'production': self.version_control.current_version['production'],
+                'staging': self.version_control.current_version['staging']
+            },
+            'drift_status': {
+                'total_checks': len(self.drift_manager.drift_history),
+                'last_check': self.drift_manager.drift_history[-1] if self.drift_manager.drift_history else None
+            },
+            'data_status': {
+                'reference_data_size': len(self.drift_manager.reference_data) if self.drift_manager.reference_data is not None else 0,
+                'untrained_data_size': len(self.drift_manager.untrained_data)
+            },
+            'performance_metrics': {
+                'avg_detection_time': np.mean(self.drift_manager.performance_metrics['detection_time']) if self.drift_manager.performance_metrics['detection_time'] else None,
+                'avg_memory_usage': np.mean(self.drift_manager.performance_metrics['memory_usage']) if self.drift_manager.performance_metrics['memory_usage'] else None
+            }
         }
 
+def main():
+    """Main execution function with enhanced error handling and logging"""
+    try:
+        logger.info("Starting Enhanced Stock Prediction Pipeline")
+        predictor = EnhancedStockPredictor()
+
+        # Initial system status
+        initial_status = predictor.get_system_status()
+        logger.info(f"Initial system status: {json.dumps(initial_status, indent=2)}")
+
+        # Fetch and process data
+        data = predictor.fetch_stock_data()
+        logger.info(f"Fetched {len(data)} records")
+
+        # Train initial model
+        model, metrics = predictor.train_and_evaluate(data)
+        logger.info(f"Initial model metrics: {asdict(metrics)}")
+
+        # Set up continuous monitoring
+        while True:
+            try:
+                # Fetch new data
+                new_data = predictor.fetch_stock_data()
+                
+                # Make predictions
+                predictions, drift_report = predictor.predict(new_data)
+                
+                # Get updated system status
+                current_status = predictor.get_system_status()
+                logger.info(f"Current system status: {json.dumps(current_status, indent=2)}")
+                
+                # Wait for next iteration
+                time.sleep(300)  # 5 minutes interval
+
+            except Exception as e:
+                logger.error(f"Error in monitoring loop: {str(e)}")
+                time.sleep(60)  # Wait 1 minute before retrying
+                continue
+
+    except Exception as e:
+        logger.error(f"Fatal error in pipeline: {str(e)}")
+        raise
 
 if __name__ == "__main__":
-    try:
-        logger.info("Starting Stock Prediction Pipeline")
-        predictor = StockPredictor()
-        
-        # 1) Fetch the raw data
-        data = predictor.fetch_stock_data()
-        
-        # 2) Prepare data for tree-based models
-        X_train, X_test, y_train, y_test = predictor.prepare_training_data(data)
-        
-        evaluations = {}
-        trained_models = {}
-        
-        # 3) Train & evaluate XGBoost
-        if X_train is not None and len(X_train) > 0:
-            logger.info("Training xgboost model...")
-            xgb_model, _ = predictor.train_model(X_train, y_train, "xgboost")
-            trained_models["xgboost"] = xgb_model
-            evaluations["xgboost"] = predictor.evaluate_tree_based(xgb_model, X_test, y_test)
-        else:
-            logger.warning("Skipping XGBoost because X_train is empty or None.")
-        
-        # 4) Train & evaluate Decision Tree
-        if X_train is not None and len(X_train) > 0:
-            logger.info("Training decision_tree model...")
-            dt_model, _ = predictor.train_model(X_train, y_train, "decision_tree")
-            trained_models["decision_tree"] = dt_model
-            evaluations["decision_tree"] = predictor.evaluate_tree_based(dt_model, X_test, y_test)
-        else:
-            logger.warning("Skipping Decision Tree because X_train is empty or None.")
-        
-        # 5) Train & evaluate LightGBM
-        if X_train is not None and len(X_train) > 0:
-            logger.info("Training lightgbm model...")
-            lgb_model, _ = predictor.train_model(X_train, y_train, "lightgbm")
-            trained_models["lightgbm"] = lgb_model
-            evaluations["lightgbm"] = predictor.evaluate_tree_based(lgb_model, X_test, y_test)
-        else:
-            logger.warning("Skipping LightGBM because X_train is empty or None.")
-        
-        # 6) Prepare data specifically for LSTM (3D sequences)
-        lstm_prepared = predictor._prepare_lstm_data(data, train_size=0.8, sequence_length=60)
-        if lstm_prepared is not None:
-            X_train_seq, X_test_seq, y_train_seq, y_test_seq, test_dates = lstm_prepared
-            if X_train_seq is not None and len(X_train_seq) > 0:
-                logger.info("Training LSTM model...")
-                lstm_model, _ = predictor.train_lstm(X_train_seq, y_train_seq)
-                trained_models["lstm"] = lstm_model
-                evaluations["lstm"] = predictor.evaluate_lstm(lstm_model, X_test_seq, y_test_seq)
-            else:
-                logger.warning("Skipping LSTM training because X_train_seq is empty.")
-        else:
-            logger.warning("Skipping LSTM because _prepare_lstm_data returned None.")
-        
-        # 7) Log evaluations
-        logger.info("Model evaluations:")
-        logger.info(json.dumps(evaluations, indent=2))
-        
-        logger.info("Stock Prediction Pipeline completed successfully")
-        
-    except Exception as e:
-        logger.error(f"Pipeline failed: {str(e)}")
-        raise
+    main()
