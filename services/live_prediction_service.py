@@ -376,4 +376,22 @@ if __name__ == "__main__":
         
         # Fetch and prepare data
         data = predictor.fetch_stock_data()
-        X_train,
+        X_train, X_test, y_train, y_test = predictor.prepare_training_data(data)
+        
+        # Train models
+        trained_models = {}
+        for model_type in predictor.models:
+            logger.info(f"Training {model_type} model...")
+            model, _ = predictor.train_model(X_train, y_train, model_type)
+            trained_models[model_type] = model
+        
+        # Evaluate models
+        evaluations = predictor.evaluate_models(X_test, y_test, trained_models)
+        logger.info("Model evaluations:")
+        logger.info(json.dumps(evaluations, indent=2))
+        
+        logger.info("Stock Prediction Pipeline completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Pipeline failed: {str(e)}")
+        raise
